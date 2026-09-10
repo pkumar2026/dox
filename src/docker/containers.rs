@@ -21,6 +21,45 @@ pub struct ContainerRow {
     /// Compose project this container belongs to, if any (see
     /// `COMPOSE_PROJECT_LABEL`). Drives the grouped list view.
     pub compose_project: Option<String>,
+    /// Deduped, sorted port mappings. Docker reports the same published
+    /// port once per bound IP stack (0.0.0.0 and [::]); we collapse those
+    /// down to one entry per (container_port, host_port, protocol).
+    pub ports: Vec<PortMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PortMapping {
+    pub container_port: u16,
+    /// `None` when the port is exposed but not published to the host.
+    pub host_port: Option<u16>,
+    pub protocol: String,
+}
+
+/// `host_port->container_port/protocol`, or just `container_port/protocol`
+/// when nothing is published — matches `docker ps`'s own notation.
+pub fn format_port_mapping(p: &PortMapping) -> String {
+    match p.host_port {
+        Some(host) => format!("{host}->{}/{}", p.container_port, p.protocol),
+        None => format!("{}/{}", p.container_port, p.protocol),
+    }
+}
+
+/// First mapping plus a "+N" badge for the rest — for a narrow list column.
+pub fn format_ports_compact(ports: &[PortMapping]) -> String {
+    match ports.split_first() {
+        None => String::new(),
+        Some((first, [])) => format_port_mapping(first),
+        Some((first, rest)) => format!("{} +{}", format_port_mapping(first), rest.len()),
+    }
+}
+
+/// Every mapping, comma-separated — for a full-width detail line.
+pub fn format_ports_full(ports: &[PortMapping]) -> String {
+    ports
+        .iter()
+        .map(format_port_mapping)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub async fn list(client: &DockerClient) -> Result<Vec<ContainerRow>> {
@@ -48,6 +87,18 @@ pub async fn list(client: &DockerClient) -> Result<Vec<ContainerRow>> {
             .and_then(|labels| labels.get(COMPOSE_PROJECT_LABEL))
             .filter(|p| !p.is_empty())
             .cloned();
+        let mut ports: Vec<PortMapping> = c
+            .ports
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| PortMapping {
+                container_port: p.private_port,
+                host_port: p.public_port,
+                protocol: p.typ.map(|t| t.to_string()).unwrap_or_default(),
+            })
+            .collect();
+        ports.sort();
+        ports.dedup();
         rows.push(ContainerRow {
             id,
             name,
@@ -55,6 +106,7 @@ pub async fn list(client: &DockerClient) -> Result<Vec<ContainerRow>> {
             state,
             status,
             compose_project,
+            ports,
         });
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -173,5 +225,76 @@ mod tests {
     #[test]
     fn normalize_state_unknown_when_both_empty() {
         assert_eq!(normalize_state("", ""), "unknown");
+    }
+
+    fn port(container: u16, host: Option<u16>, proto: &str) -> PortMapping {
+        PortMapping {
+            container_port: container,
+            host_port: host,
+            protocol: proto.to_string(),
+        }
+    }
+
+    #[test]
+    fn format_published_port_matches_docker_ps_notation() {
+        assert_eq!(
+            format_port_mapping(&port(8080, Some(8081), "tcp")),
+            "8081->8080/tcp"
+        );
+    }
+
+    #[test]
+    fn format_unpublished_port_omits_arrow() {
+        assert_eq!(format_port_mapping(&port(8000, None, "tcp")), "8000/tcp");
+    }
+
+    #[test]
+    fn compact_shows_only_first_plus_count_badge() {
+        let ports = vec![
+            port(7233, Some(7233), "tcp"),
+            port(8000, None, "tcp"),
+            port(8080, Some(8080), "tcp"),
+        ];
+        assert_eq!(format_ports_compact(&ports), "7233->7233/tcp +2");
+    }
+
+    #[test]
+    fn compact_single_port_has_no_badge() {
+        assert_eq!(
+            format_ports_compact(&[port(5432, Some(5432), "tcp")]),
+            "5432->5432/tcp"
+        );
+    }
+
+    #[test]
+    fn compact_empty_is_empty_string() {
+        assert_eq!(format_ports_compact(&[]), "");
+    }
+
+    #[test]
+    fn full_lists_every_mapping_comma_separated() {
+        let ports = vec![port(7233, Some(7233), "tcp"), port(8000, None, "tcp")];
+        assert_eq!(format_ports_full(&ports), "7233->7233/tcp, 8000/tcp");
+    }
+
+    /// Docker reports the same published port once per bound IP stack —
+    /// e.g. brand-boost-temporal-1 in the wild reports 0.0.0.0:7233->7233/tcp
+    /// AND [::]:7233->7233/tcp as two separate PortSummary entries. `list`
+    /// dedupes these; this test locks in that behavior at the sort+dedup
+    /// step directly (ip isn't part of PortMapping, so a naive collect
+    /// would otherwise show every port twice).
+    #[test]
+    fn dedup_collapses_ipv4_ipv6_duplicates() {
+        let mut ports = vec![
+            port(7233, Some(7233), "tcp"), // 0.0.0.0
+            port(7233, Some(7233), "tcp"), // [::]
+            port(8000, None, "tcp"),
+        ];
+        ports.sort();
+        ports.dedup();
+        assert_eq!(
+            ports,
+            vec![port(7233, Some(7233), "tcp"), port(8000, None, "tcp")]
+        );
     }
 }

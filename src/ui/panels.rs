@@ -4,7 +4,7 @@ use ratatui::widgets::{Row, Table};
 use ratatui::Frame;
 
 use crate::app::{App, Panel};
-use crate::docker::containers::normalize_state;
+use crate::docker::containers::{self, normalize_state};
 use crate::docker::images::format_size;
 use crate::grouping;
 
@@ -111,7 +111,10 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
                 let marker = if collapsed { "▸" } else { "▾" };
                 let project = group.project.as_deref().unwrap_or("");
                 let label = format!("{marker} {project} ({}/{})", group.running, group.total());
-                rows.push(Row::new(vec![label, String::new()]).style(group_header_style(focused)));
+                rows.push(
+                    Row::new(vec![label, String::new(), String::new()])
+                        .style(group_header_style(focused)),
+                );
             }
             grouping::RenderRow::Container {
                 view_idx,
@@ -131,18 +134,26 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
                 } else {
                     c.name.clone()
                 };
+                let ports = truncate(&containers::format_ports_compact(&c.ports), 16);
                 if Some(*view_idx) == selected_view_idx {
                     rendered_selected = Some(rows.len());
                 }
-                rows.push(Row::new(vec![name, state]).style(style));
+                rows.push(Row::new(vec![name, state, ports]).style(style));
             }
         }
     }
 
-    let table = Table::new(rows, [Constraint::Min(10), Constraint::Length(8)])
-        .header(Row::new(vec!["NAME", "STATE"]).style(header_style(focused)))
-        .row_highlight_style(highlight_style(focused))
-        .highlight_symbol(if focused { "▌" } else { " " });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(10),
+            Constraint::Length(8),
+            Constraint::Length(16),
+        ],
+    )
+    .header(Row::new(vec!["NAME", "STATE", "PORTS"]).style(header_style(focused)))
+    .row_highlight_style(highlight_style(focused))
+    .highlight_symbol(if focused { "▌" } else { " " });
 
     let real_selected = app.containers_state.selected();
     app.containers_state.select(rendered_selected);

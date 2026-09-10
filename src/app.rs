@@ -428,6 +428,19 @@ impl App {
             .clone()
             .unwrap_or_else(|| "(none)".into())
     }
+    /// Full port mapping list for the container whose logs are on screen,
+    /// or empty if it publishes nothing (or nothing is streaming).
+    pub fn active_log_ports(&self) -> String {
+        let id = match &self.log_container_id {
+            Some(id) => id,
+            None => return String::new(),
+        };
+        self.containers
+            .iter()
+            .find(|c| &c.id == id)
+            .map(|c| containers::format_ports_full(&c.ports))
+            .unwrap_or_default()
+    }
     pub fn selected_image(&self) -> Option<ImageRow> {
         let idx = view_to_row(&self.visible[1], self.images_state.selected())?;
         self.images.get(idx).cloned()

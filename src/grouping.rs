@@ -131,6 +131,7 @@ mod tests {
             state: state.to_string(),
             status: String::new(),
             compose_project: project.map(str::to_string),
+            ports: Vec::new(),
         }
     }
 

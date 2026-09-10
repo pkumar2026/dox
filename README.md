@@ -30,6 +30,12 @@ the label `docker compose` already sets — no extra API calls). Press `z` to
 fold a stack you're not touching right now; a flat list gets hard to scan once
 a handful of stacks are running side by side.
 
+The PORTS column shows what's actually published (`docker ps` notation:
+`hostport->containerport/proto`, or bare `port/proto` when it's exposed but
+not published) — deduped, so a port bound on both IPv4 and IPv6 shows once,
+not twice. Selecting a container's logs shows its full mapping list in the
+pane title, in case it doesn't fit the column.
+
 And it deliberately does less. No exec-into-container shell, no CPU/memory
 graphs — see [What's out of scope](#whats-out-of-scope-intentional). If you
 just need to see what's running, stop or delete it, and read its logs, that's

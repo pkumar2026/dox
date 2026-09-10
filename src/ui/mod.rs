@@ -199,9 +199,16 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         " [PAUSED — f to resume]"
     };
+    let ports = app.active_log_ports();
+    let ports_suffix = if ports.is_empty() {
+        String::new()
+    } else {
+        format!("  ports: {ports}")
+    };
     let title = format!(
-        " Logs: {}  {}-{}/{}{} ",
+        " Logs: {}{}  {}-{}/{}{} ",
         label,
+        ports_suffix,
         first_visible.saturating_add(if total == 0 { 0 } else { 1 }),
         last_visible,
         total,
