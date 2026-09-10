@@ -7,6 +7,23 @@ stop or delete them, and tail container logs with copy-to-clipboard.
 Built in Rust with [ratatui](https://ratatui.rs/) and [bollard](https://github.com/fussybeaver/bollard).
 Talks to the Docker daemon directly over its unix socket — no shelling out to `docker`.
 
+## Why
+
+Most Docker TUIs, lazydocker included, shell out to the `docker` CLI for every
+action: spawn a process, parse its text output, repeat on every refresh tick.
+`dox` talks to the daemon directly over the Docker API via `bollard`, so
+listing containers or tailing logs doesn't round-trip through a subprocess.
+
+It also resolves colima's socket (`~/.colima/default/docker.sock`) before
+falling back to the system default, so it works out of the box on a colima
+setup — most general-purpose TUIs assume Docker Desktop's socket and need
+`DOCKER_HOST` set by hand to work with colima.
+
+And it deliberately does less. No compose project grouping, no exec-into-container
+shell, no CPU/memory graphs — see [What's out of scope](#whats-out-of-scope-intentional).
+If you just need to see what's running, stop or delete it, and read its logs,
+that's the whole tool: no feature surface to dig through.
+
 ## Install
 
 ```sh
