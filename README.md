@@ -19,6 +19,12 @@ falling back to the system default, so it works out of the box on a colima
 setup — most general-purpose TUIs assume Docker Desktop's socket and need
 `DOCKER_HOST` set by hand to work with colima.
 
+Log scrollback and copying actually work. You can page/arrow back through
+history without losing your place, independent of live tail-follow — see
+[Copying log text](#copying-log-text) for the three ways to get text out of
+the pane. A lot of terminal Docker TUIs either lock you to tail-only or fight
+you on copy once mouse capture is on.
+
 And it deliberately does less. No compose project grouping, no exec-into-container
 shell, no CPU/memory graphs — see [What's out of scope](#whats-out-of-scope-intentional).
 If you just need to see what's running, stop or delete it, and read its logs,
