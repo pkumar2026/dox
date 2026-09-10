@@ -10,7 +10,14 @@ Talks to the Docker daemon directly over its unix socket — no shelling out to 
 ## Install
 
 ```sh
-cd ~/dotfiles/tools/dockui
+brew install pkumar2026/dox/dox
+```
+
+Or build from source:
+
+```sh
+git clone https://github.com/pkumar2026/dox
+cd dox
 cargo install --path .
 ```
 
