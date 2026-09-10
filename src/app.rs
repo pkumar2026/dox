@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -24,6 +25,7 @@ use crate::docker::networks::{self, NetworkRow};
 use crate::docker::volumes::{self, VolumeRow};
 use crate::docker::DockerClient;
 use crate::events::{self, Action, Mode};
+use crate::grouping::{build_groups, flatten_selectable, Group};
 use crate::ui::logs::{LogBuffer, Selection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +196,10 @@ pub struct App {
     pub visual_select: Option<Selection>,
 
     pub filter: String,
+    /// Compose projects currently folded shut in the container list. Members
+    /// of a collapsed group are excluded from `visible[0]` entirely — see
+    /// `crate::grouping`.
+    pub collapsed_groups: HashSet<String>,
     pub pending: Option<PendingConfirm>,
     pub toast: Option<(String, Instant)>,
     pub should_quit: bool,
@@ -276,6 +282,7 @@ impl App {
             log_stream: LogStreamState::Idle,
             visual_select: None,
             filter: String::new(),
+            collapsed_groups: HashSet::new(),
             pending: None,
             toast: None,
             should_quit: false,
@@ -351,12 +358,6 @@ impl App {
         &self.filter
     }
 
-    /// Indices into `self.containers` that pass the current filter. Cached by
-    /// `recompute_visible` so filtering runs once per data/filter change rather
-    /// than on every call — the draw path alone used to call this ~8x per frame.
-    pub fn visible_containers(&self) -> &[usize] {
-        &self.visible[0]
-    }
     pub fn visible_images(&self) -> &[usize] {
         &self.visible[1]
     }
@@ -375,12 +376,36 @@ impl App {
     /// changing the filter — nothing else invalidates them.
     pub fn recompute_visible(&mut self) {
         let q = self.filter.to_lowercase();
-        self.visible[0] = matching_indices(&self.containers, &q, |c| {
-            [c.name.as_str(), c.image.as_str()]
-        });
+        let groups = build_groups(&self.containers, &self.matched_containers(&q));
+        self.visible[0] = flatten_selectable(&groups, &self.collapsed_groups);
         self.visible[1] = matching_indices(&self.images, &q, |i| [i.repo_tag.as_str(), ""]);
         self.visible[2] = matching_indices(&self.volumes, &q, |v| [v.name.as_str(), ""]);
         self.visible[3] = matching_indices(&self.networks, &q, |n| [n.name.as_str(), ""]);
+    }
+
+    fn matched_containers(&self, q: &str) -> Vec<usize> {
+        matching_indices(&self.containers, q, |c| [c.name.as_str(), c.image.as_str()])
+    }
+
+    /// Containers grouped by compose project, for the list view. Recomputed
+    /// from the current filter each call — cheap at the container counts
+    /// this tool targets, and keeps `build_groups` the single source of
+    /// truth instead of caching a second copy alongside `visible[0]`.
+    pub fn container_groups(&self) -> Vec<Group> {
+        let q = self.filter.to_lowercase();
+        build_groups(&self.containers, &self.matched_containers(&q))
+    }
+
+    /// Collapse/expand the compose-project group the selected container
+    /// belongs to. No-op for ungrouped containers or an empty list.
+    fn toggle_selected_group(&mut self) {
+        let Some(project) = self.selected_container().and_then(|c| c.compose_project) else {
+            return;
+        };
+        if !self.collapsed_groups.remove(&project) {
+            self.collapsed_groups.insert(project);
+        }
+        self.refilter();
     }
 
     pub fn selected_container(&self) -> Option<ContainerRow> {
@@ -1026,6 +1051,7 @@ impl App {
             }
             Action::DeleteSelected => self.enqueue_delete(),
             Action::PruneCurrentPanel => self.enqueue_prune(),
+            Action::ToggleGroup => self.toggle_selected_group(),
             Action::BeginFilter => {
                 self.mode = Mode::Filtering;
                 self.filter.clear();

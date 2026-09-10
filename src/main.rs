@@ -3,6 +3,7 @@ mod clipboard;
 mod config;
 mod docker;
 mod events;
+mod grouping;
 mod ui;
 
 use std::io;

@@ -25,10 +25,15 @@ history without losing your place, independent of live tail-follow — see
 the pane. A lot of terminal Docker TUIs either lock you to tail-only or fight
 you on copy once mouse capture is on.
 
-And it deliberately does less. No compose project grouping, no exec-into-container
-shell, no CPU/memory graphs — see [What's out of scope](#whats-out-of-scope-intentional).
-If you just need to see what's running, stop or delete it, and read its logs,
-that's the whole tool: no feature surface to dig through.
+Containers group by compose project automatically (`com.docker.compose.project`,
+the label `docker compose` already sets — no extra API calls). Press `z` to
+fold a stack you're not touching right now; a flat list gets hard to scan once
+a handful of stacks are running side by side.
+
+And it deliberately does less. No exec-into-container shell, no CPU/memory
+graphs — see [What's out of scope](#whats-out-of-scope-intentional). If you
+just need to see what's running, stop or delete it, and read its logs, that's
+the whole tool: no feature surface to dig through.
 
 ## Install
 
@@ -92,6 +97,7 @@ By default `dox` looks for a daemon in this order:
 | `x` / `s` / `r`      | stop / start / restart container                                          |
 | `d`                  | delete selected (with confirm)                                            |
 | `D`                  | prune dangling images / unused volumes / unused networks                  |
+| `z`                  | collapse/expand the compose-project group of the selected container       |
 | `l`                  | show logs for selected container                                          |
 | `f`                  | toggle live follow                                                        |
 | `v`                  | enter visual selection in logs                                            |
@@ -142,5 +148,4 @@ cargo test -- --ignored
 
 - Container CPU / memory graphs
 - `docker exec` shell-into-container
-- docker-compose project grouping
 - Image build / pull / tag (you have `docker build` for that)

@@ -73,27 +73,75 @@ fn highlight_style(focused: bool) -> Style {
     }
 }
 
+/// Group headers aren't part of the selectable index space (`visible[0]`
+/// holds real containers only — see `crate::grouping`), so the table's row
+/// array has more entries than `containers_state.selected()` counts. We
+/// translate the real index to its rendered position for this draw call,
+/// then restore it so the rest of the app keeps working in the unheadered
+/// index space.
 fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
-    let rows: Vec<Row> = app
-        .visible_containers()
-        .iter()
-        .filter_map(|&i| app.containers.get(i))
-        .map(|c| {
+    let groups = app.container_groups();
+    let selected_view_idx = app.containers_state.selected();
+
+    let mut rows: Vec<Row> = Vec::new();
+    let mut view_idx = 0usize;
+    let mut rendered_selected: Option<usize> = None;
+
+    for group in &groups {
+        let collapsed = group
+            .project
+            .as_deref()
+            .is_some_and(|p| app.collapsed_groups.contains(p));
+
+        if let Some(project) = &group.project {
+            let marker = if collapsed { "▸" } else { "▾" };
+            let label = format!("{marker} {project} ({}/{})", group.running, group.total());
+            let style = if focused {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                dimmed("")
+            };
+            rows.push(Row::new(vec![label, String::new()]).style(style));
+        }
+
+        if collapsed {
+            continue;
+        }
+
+        for &i in &group.members {
+            let Some(c) = app.containers.get(i) else {
+                continue;
+            };
             let state = normalize_state(&c.state, &c.status);
             let style = if focused {
                 Style::default().fg(container_state_color(&state))
             } else {
                 dimmed(&state)
             };
-            Row::new(vec![c.name.clone(), state]).style(style)
-        })
-        .collect();
+            let name = if group.project.is_some() {
+                format!("  {}", c.name)
+            } else {
+                c.name.clone()
+            };
+            if Some(view_idx) == selected_view_idx {
+                rendered_selected = Some(rows.len());
+            }
+            rows.push(Row::new(vec![name, state]).style(style));
+            view_idx += 1;
+        }
+    }
 
     let table = Table::new(rows, [Constraint::Min(10), Constraint::Length(8)])
         .header(Row::new(vec!["NAME", "STATE"]).style(header_style(focused)))
         .row_highlight_style(highlight_style(focused))
         .highlight_symbol(if focused { "▌" } else { " " });
+
+    let real_selected = app.containers_state.selected();
+    app.containers_state.select(rendered_selected);
     frame.render_stateful_widget(table, area, &mut app.containers_state);
+    app.containers_state.select(real_selected);
 }
 
 fn draw_images(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {

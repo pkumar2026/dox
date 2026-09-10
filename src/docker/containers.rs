@@ -8,6 +8,9 @@ use futures_util::Stream;
 
 use super::DockerClient;
 
+/// Docker sets this on every container a `docker compose` stack creates.
+const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+
 #[derive(Debug, Clone)]
 pub struct ContainerRow {
     pub id: String,
@@ -15,6 +18,9 @@ pub struct ContainerRow {
     pub image: String,
     pub state: String,
     pub status: String,
+    /// Compose project this container belongs to, if any (see
+    /// `COMPOSE_PROJECT_LABEL`). Drives the grouped list view.
+    pub compose_project: Option<String>,
 }
 
 pub async fn list(client: &DockerClient) -> Result<Vec<ContainerRow>> {
@@ -36,12 +42,19 @@ pub async fn list(client: &DockerClient) -> Result<Vec<ContainerRow>> {
         let image = c.image.unwrap_or_default();
         let state = c.state.map(|s| s.to_string()).unwrap_or_default();
         let status = c.status.unwrap_or_default();
+        let compose_project = c
+            .labels
+            .as_ref()
+            .and_then(|labels| labels.get(COMPOSE_PROJECT_LABEL))
+            .filter(|p| !p.is_empty())
+            .cloned();
         rows.push(ContainerRow {
             id,
             name,
             image,
             state,
             status,
+            compose_project,
         });
     }
     rows.sort_by(|a, b| a.name.cmp(&b.name));

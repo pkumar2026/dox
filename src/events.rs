@@ -27,6 +27,8 @@ pub enum Action {
     RestartContainer,
     DeleteSelected,
     PruneCurrentPanel,
+    /// Collapse/expand the compose-project group of the selected container.
+    ToggleGroup,
     ToggleLogs,
     ToggleFollow,
     EnterVisualMode,
@@ -117,6 +119,7 @@ pub fn map(key: KeyEvent, mode: Mode) -> Option<Action> {
             Char('r') => Some(Action::RestartContainer),
             Char('d') => Some(Action::DeleteSelected),
             Char('D') => Some(Action::PruneCurrentPanel),
+            Char('z') => Some(Action::ToggleGroup),
             Char('l') => Some(Action::ToggleLogs),
             Char('f') => Some(Action::ToggleFollow),
             Char('v') => Some(Action::EnterVisualMode),
@@ -214,6 +217,10 @@ mod tests {
         assert_eq!(
             map(k(KeyCode::Char('D')), Mode::Normal),
             Some(Action::PruneCurrentPanel)
+        );
+        assert_eq!(
+            map(k(KeyCode::Char('z')), Mode::Normal),
+            Some(Action::ToggleGroup)
         );
         assert_eq!(
             map(k(KeyCode::Char('l')), Mode::Normal),
