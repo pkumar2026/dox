@@ -9,8 +9,23 @@ permissions:
   contents: write
 
 jobs:
+  check-version:
+    name: Cargo.toml matches tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Cargo.toml version matches the pushed tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "::error::tag v$TAG_VERSION does not match Cargo.toml version $CARGO_VERSION -- bump Cargo.toml before tagging"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: check-version
     strategy:
       fail-fast: false
       matrix:
@@ -59,3 +74,23 @@ jobs:
             dox-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true
+
+  update-tap:
+    name: Bump homebrew-dox formula
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone tap
+        run: |
+          git clone "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/pkumar2026/homebrew-dox.git" "$RUNNER_TEMP/homebrew-dox"
+          git -C "$RUNNER_TEMP/homebrew-dox" config user.name "github-actions[bot]"
+          git -C "$RUNNER_TEMP/homebrew-dox" config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump formula to this release
+        env:
+          DOX_TAP_DIR: ${{ runner.temp }}/homebrew-dox
+          DOX_REPO: pkumar2026/dox
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/bump-formula.sh "${GITHUB_REF_NAME#v}"

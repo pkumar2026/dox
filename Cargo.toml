@@ -1,6 +1,6 @@
 [package]
 name = "dox"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.93"
 description = "A focused Docker TUI for colima — lazydocker, but smaller."
