@@ -190,10 +190,15 @@ pub struct App {
     pub log_task: Option<JoinHandle<()>>,
     pub log_container_id: Option<String>,
     /// Name of the container whose logs are currently streaming. Tracks the
-    /// *active* stream (set on an explicit open), not the highlighted row, so
-    /// the log pane title stays correct while you browse the container list.
+    /// *active* stream, which follows the highlighted row in the Containers
+    /// panel (see `pending_log_follow`) after a short debounce.
     pub log_container_name: Option<String>,
     pub log_stream: LogStreamState,
+    /// A highlighted-but-not-yet-open container, waiting out the debounce in
+    /// `commit_log_follow`. Scanning quickly past several rows only ever
+    /// opens a stream for wherever the cursor settles, not every row passed
+    /// through — see `schedule_log_follow`.
+    pub pending_log_follow: Option<(String, String, Instant)>,
     pub visual_select: Option<Selection>,
 
     pub filter: String,
@@ -281,6 +286,7 @@ impl App {
             log_container_id: None,
             log_container_name: None,
             log_stream: LogStreamState::Idle,
+            pending_log_follow: None,
             visual_select: None,
             filter: String::new(),
             collapsed_groups: HashSet::new(),
@@ -472,6 +478,40 @@ impl App {
         let cur = state.selected().unwrap_or(0) as isize;
         let next = (cur + delta).clamp(0, len as isize - 1) as usize;
         state.select(Some(next));
+        self.schedule_log_follow();
+    }
+
+    /// Debounce window for `schedule_log_follow` — see its docs.
+    const LOG_FOLLOW_DEBOUNCE: Duration = Duration::from_millis(200);
+
+    /// Mark the highlighted container as wanting its logs, without opening a
+    /// stream yet. `commit_log_follow` (driven by the run loop) fires once
+    /// this container has stayed highlighted for `LOG_FOLLOW_DEBOUNCE` —
+    /// holding an arrow key or scrolling past several containers costs zero
+    /// stream opens for rows you didn't stop on. A no-op outside the
+    /// Containers panel, or when the highlighted row is already streaming.
+    fn schedule_log_follow(&mut self) {
+        if self.panel != Panel::Containers {
+            return;
+        }
+        let Some(c) = self.selected_container() else {
+            self.pending_log_follow = None;
+            return;
+        };
+        if self.log_container_id.as_deref() == Some(c.id.as_str()) {
+            self.pending_log_follow = None;
+            return;
+        }
+        self.pending_log_follow = Some((c.id, c.name, Instant::now()));
+    }
+
+    /// Open the stream for whatever `schedule_log_follow` last settled on,
+    /// if anything is still pending (the debounce may have been superseded
+    /// by a later move or an explicit open in the meantime).
+    fn commit_log_follow(&mut self) {
+        if let Some((id, name, _)) = self.pending_log_follow.take() {
+            self.spawn_log_stream(id, name);
+        }
     }
 
     fn select_panel(&mut self, panel: Panel) {
@@ -513,6 +553,7 @@ impl App {
         }
         self.current_state_mut()
             .select(Some(if top { 0 } else { len - 1 }));
+        self.schedule_log_follow();
     }
 
     pub fn ingest_msg(&mut self, msg: AppMsg) {
@@ -664,9 +705,9 @@ impl App {
         }
         self.recompute_visible();
         self.clamp_all_selections();
-        // Auto-open logs for the highlighted container only when nothing is
-        // streaming yet (first launch). After that the stream is decoupled from
-        // selection — it changes only on an explicit open (Enter / l).
+        // First launch only: get a stream going immediately rather than
+        // waiting out the debounce. After that, schedule_log_follow keeps
+        // the stream in sync with the highlighted row on its own.
         if matches!(self.panel, Panel::Containers) && self.log_container_id.is_none() {
             self.open_selected_logs();
         }
@@ -717,6 +758,7 @@ impl App {
                 Hit::PanelRow { panel, row } => {
                     self.select_panel_index(panel);
                     self.current_state_mut().select(Some(row));
+                    self.schedule_log_follow();
                 }
                 Hit::GroupHeader { panel, project } => {
                     self.select_panel_index(panel);
@@ -932,8 +974,7 @@ impl App {
                             .min(self.logs.len().saturating_sub(1));
                     }
                 } else {
-                    // Browsing the list no longer switches the log stream — the
-                    // current stream keeps flowing. Press Enter / l to switch.
+                    // move_selection schedules the debounced log follow.
                     self.move_selection(1);
                 }
             }
@@ -1331,10 +1372,10 @@ impl App {
         });
     }
 
-    /// Switch the log stream to the currently-highlighted container. No-op if
-    /// that container is already the active stream, so re-opening it doesn't
-    /// wipe the buffer. This is the only selection-driven entry point — it runs
-    /// on an explicit open (Enter / l / first launch), never on cursor movement.
+    /// Switch the log stream to the currently-highlighted container right
+    /// away, bypassing the debounce — the explicit-open path (Enter / l /
+    /// first launch). No-op if that container is already the active stream,
+    /// so re-opening it doesn't wipe the buffer.
     fn open_selected_logs(&mut self) {
         let Some(container) = self.selected_container() else {
             return;
@@ -1348,6 +1389,7 @@ impl App {
     /// (Re)start the log stream for a specific container: abort any running
     /// task, reset the buffer to follow-at-bottom, and spawn a fresh reader.
     fn spawn_log_stream(&mut self, id: String, name: String) {
+        self.pending_log_follow = None;
         if let Some(handle) = self.log_task.take() {
             handle.abort();
         }
@@ -1575,6 +1617,17 @@ where
             Duration::from_secs(1)
         };
 
+        // How much longer until a pending log-follow debounce should fire.
+        // Only consulted while something is actually pending (see the select
+        // arm's guard), so the fallback value here is never used.
+        let log_follow_wait = app
+            .pending_log_follow
+            .as_ref()
+            .map(|(_, _, requested_at)| {
+                App::LOG_FOLLOW_DEBOUNCE.saturating_sub(requested_at.elapsed())
+            })
+            .unwrap_or_default();
+
         tokio::select! {
             biased;
             maybe_evt = events.next() => {
@@ -1608,6 +1661,10 @@ where
             }
             _ = tokio::time::sleep(until_next_frame), if dirty => {
                 // Wake up to render the pending dirty frame.
+            }
+            _ = tokio::time::sleep(log_follow_wait), if app.pending_log_follow.is_some() => {
+                app.commit_log_follow();
+                dirty = true;
             }
         }
     }

@@ -16,7 +16,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("d", "delete selected"),
     ("D", "prune dangling (images) / unused (volumes, networks)"),
     ("z", "collapse/expand its compose group"),
-    ("l", "show logs for container"),
+    ("l", "switch logs now (skip follow debounce)"),
     ("f", "toggle live follow"),
     ("v", "enter visual selection in logs"),
     ("y", "yank selection (or whole buffer) to clipboard"),

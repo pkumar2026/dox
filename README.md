@@ -36,6 +36,11 @@ not published) — deduped, so a port bound on both IPv4 and IPv6 shows once,
 not twice. Selecting a container's logs shows its full mapping list in the
 pane title, in case it doesn't fit the column.
 
+The log pane follows whatever's highlighted, debounced by ~200ms — scan
+quickly down a long list and only the container you actually stop on ever
+opens a stream, not every row you passed through. `Enter` / `l` switch
+immediately if you don't want to wait out the debounce.
+
 And it deliberately does less. No exec-into-container shell, no CPU/memory
 graphs — see [What's out of scope](#whats-out-of-scope-intentional). If you
 just need to see what's running, stop or delete it, and read its logs, that's
@@ -104,7 +109,7 @@ By default `dox` looks for a daemon in this order:
 | `d`                  | delete selected (with confirm)                                            |
 | `D`                  | prune dangling images / unused volumes / unused networks                  |
 | `z`                  | collapse/expand the compose-project group of the selected container       |
-| `l`                  | show logs for selected container                                          |
+| `l`                  | switch logs to selected container now (skips the follow debounce)         |
 | `f`                  | toggle live follow                                                        |
 | `v`                  | enter visual selection in logs                                            |
 | `y`                  | yank selection (or whole buffer) to clipboard                             |
