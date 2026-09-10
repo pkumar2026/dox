@@ -65,6 +65,49 @@ pub fn build_groups(containers: &[ContainerRow], matched: &[usize]) -> Vec<Group
         .collect()
 }
 
+/// One line of the on-screen container list: either a group's header or one
+/// of its (or the ungrouped bucket's) member rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderRow<'a> {
+    Header(&'a Group),
+    /// `view_idx` is the row's position in the selectable list
+    /// (`flatten_selectable`'s output) — what `TableState::select` expects.
+    /// `container_idx` is the index into the source `containers` slice.
+    Container {
+        view_idx: usize,
+        container_idx: usize,
+    },
+}
+
+/// Expand groups into the exact sequence of lines the list draws, in order.
+/// This is the single source of truth for "what is on screen at row N" —
+/// both the draw call and mouse hit-testing walk this same list, so a click
+/// always lands on what's actually visible.
+pub fn render_rows<'a>(groups: &'a [Group], collapsed: &HashSet<String>) -> Vec<RenderRow<'a>> {
+    let mut out = Vec::new();
+    let mut view_idx = 0;
+    for group in groups {
+        let is_collapsed = group
+            .project
+            .as_deref()
+            .is_some_and(|p| collapsed.contains(p));
+        if group.project.is_some() {
+            out.push(RenderRow::Header(group));
+        }
+        if is_collapsed {
+            continue;
+        }
+        for &container_idx in &group.members {
+            out.push(RenderRow::Container {
+                view_idx,
+                container_idx,
+            });
+            view_idx += 1;
+        }
+    }
+    out
+}
+
 /// Flatten groups into the selectable index list. Members of a collapsed
 /// project are dropped entirely — not just visually hidden, but unreachable
 /// by navigation until the group reopens.
@@ -195,5 +238,64 @@ mod tests {
         let selectable = flatten_selectable(&groups, &collapsed);
 
         assert_eq!(selectable, vec![0]);
+    }
+
+    #[test]
+    fn render_rows_interleaves_headers_with_members_in_view_order() {
+        let rows = vec![
+            row("web-1", Some("alpha"), "running"),
+            row("db-1", Some("alpha"), "running"),
+            row("standalone", None, "running"),
+        ];
+        let matched = vec![0, 1, 2];
+        let groups = build_groups(&rows, &matched);
+        let rendered = render_rows(&groups, &HashSet::new());
+
+        assert_eq!(
+            rendered,
+            vec![
+                RenderRow::Header(&groups[0]),
+                RenderRow::Container {
+                    view_idx: 0,
+                    container_idx: 1
+                }, // db-1 sorts before web-1
+                RenderRow::Container {
+                    view_idx: 1,
+                    container_idx: 0
+                },
+                RenderRow::Container {
+                    view_idx: 2,
+                    container_idx: 2
+                }, // ungrouped bucket: no header
+            ]
+        );
+    }
+
+    #[test]
+    fn render_rows_skips_members_of_a_collapsed_group_but_keeps_its_header() {
+        let rows = vec![
+            row("web-1", Some("alpha"), "running"),
+            row("web-2", Some("beta"), "running"),
+        ];
+        let matched = vec![0, 1];
+        let groups = build_groups(&rows, &matched);
+        let mut collapsed = HashSet::new();
+        collapsed.insert("alpha".to_string());
+        let rendered = render_rows(&groups, &collapsed);
+
+        // alpha's header still shows (collapsed indicator lives in draw code)
+        // but its member is gone; beta is untouched and starts at view_idx 0
+        // since alpha contributed no selectable rows.
+        assert_eq!(
+            rendered,
+            vec![
+                RenderRow::Header(&groups[0]),
+                RenderRow::Header(&groups[1]),
+                RenderRow::Container {
+                    view_idx: 0,
+                    container_idx: 1
+                },
+            ]
+        );
     }
 }

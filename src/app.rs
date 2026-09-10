@@ -25,6 +25,7 @@ use crate::docker::networks::{self, NetworkRow};
 use crate::docker::volumes::{self, VolumeRow};
 use crate::docker::DockerClient;
 use crate::events::{self, Action, Mode};
+use crate::grouping;
 use crate::grouping::{build_groups, flatten_selectable, Group};
 use crate::ui::logs::{LogBuffer, Selection};
 
@@ -402,8 +403,12 @@ impl App {
         let Some(project) = self.selected_container().and_then(|c| c.compose_project) else {
             return;
         };
-        if !self.collapsed_groups.remove(&project) {
-            self.collapsed_groups.insert(project);
+        self.toggle_group(&project);
+    }
+
+    fn toggle_group(&mut self, project: &str) {
+        if !self.collapsed_groups.remove(project) {
+            self.collapsed_groups.insert(project.to_string());
         }
         self.refilter();
     }
@@ -700,6 +705,10 @@ impl App {
                     self.select_panel_index(panel);
                     self.current_state_mut().select(Some(row));
                 }
+                Hit::GroupHeader { panel, project } => {
+                    self.select_panel_index(panel);
+                    self.toggle_group(&project);
+                }
                 Hit::Logs => self.mouse_anchor_logs(m.column, m.row),
                 Hit::Splitter => {
                     self.resizing_split = true;
@@ -734,6 +743,10 @@ impl App {
                 self.select_panel_index(panel);
                 self.move_selection(delta);
             }
+            Hit::GroupHeader { panel, .. } => {
+                self.select_panel_index(panel);
+                self.move_selection(delta);
+            }
             _ => self.scroll_logs(delta),
         }
     }
@@ -762,7 +775,30 @@ impl App {
                 return Hit::PanelBody(i);
             }
             let offset = self.panel_state(i).offset();
-            let idx = offset + (row - inner.y - 1) as usize;
+            let rel = (row - inner.y - 1) as usize;
+
+            // Containers interleave non-selectable group headers into the
+            // row array (see `grouping::render_rows`), so its offset is in
+            // rendered-row space, not the plain visible-index space the
+            // other three panels use. Walk the same render list to resolve
+            // a screen row to what's actually drawn there.
+            if i == 0 {
+                let groups = self.container_groups();
+                let rendered = grouping::render_rows(&groups, &self.collapsed_groups);
+                return match rendered.get(offset + rel) {
+                    Some(grouping::RenderRow::Header(g)) => Hit::GroupHeader {
+                        panel: i,
+                        project: g.project.clone().unwrap_or_default(),
+                    },
+                    Some(grouping::RenderRow::Container { view_idx, .. }) => Hit::PanelRow {
+                        panel: i,
+                        row: *view_idx,
+                    },
+                    None => Hit::PanelBody(i),
+                };
+            }
+
+            let idx = offset + rel;
             return if idx < self.panel_count(i) {
                 Hit::PanelRow { panel: i, row: idx }
             } else {
@@ -1424,11 +1460,17 @@ async fn run_action(client: &DockerClient, action: ConfirmAction) -> Result<Stri
 }
 
 /// Where a screen coordinate landed, resolved from the last drawn geometry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Hit {
     Tab(usize),
     PanelRow { panel: usize, row: usize },
     PanelBody(usize),
+    /// A compose-project header line in the (currently container-only)
+    /// grouped list.
+    GroupHeader {
+        panel: usize,
+        project: String,
+    },
     Logs,
     Splitter,
     Nothing,

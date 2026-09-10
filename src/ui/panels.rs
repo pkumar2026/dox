@@ -6,6 +6,7 @@ use ratatui::Frame;
 use crate::app::{App, Panel};
 use crate::docker::containers::normalize_state;
 use crate::docker::images::format_size;
+use crate::grouping;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, panel: Panel) {
     let focused = panel == app.panel;
@@ -79,57 +80,62 @@ fn highlight_style(focused: bool) -> Style {
 /// translate the real index to its rendered position for this draw call,
 /// then restore it so the rest of the app keeps working in the unheadered
 /// index space.
+fn group_header_style(focused: bool) -> Style {
+    // A filled bar rather than just colored text — reads as a section
+    // divider between groups instead of just another row.
+    if focused {
+        Style::default()
+            .bg(Color::DarkGray)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().bg(Color::DarkGray).fg(Color::DarkGray)
+    }
+}
+
 fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     let groups = app.container_groups();
+    let render_rows = grouping::render_rows(&groups, &app.collapsed_groups);
     let selected_view_idx = app.containers_state.selected();
 
     let mut rows: Vec<Row> = Vec::new();
-    let mut view_idx = 0usize;
     let mut rendered_selected: Option<usize> = None;
 
-    for group in &groups {
-        let collapsed = group
-            .project
-            .as_deref()
-            .is_some_and(|p| app.collapsed_groups.contains(p));
-
-        if let Some(project) = &group.project {
-            let marker = if collapsed { "▸" } else { "▾" };
-            let label = format!("{marker} {project} ({}/{})", group.running, group.total());
-            let style = if focused {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                dimmed("")
-            };
-            rows.push(Row::new(vec![label, String::new()]).style(style));
-        }
-
-        if collapsed {
-            continue;
-        }
-
-        for &i in &group.members {
-            let Some(c) = app.containers.get(i) else {
-                continue;
-            };
-            let state = normalize_state(&c.state, &c.status);
-            let style = if focused {
-                Style::default().fg(container_state_color(&state))
-            } else {
-                dimmed(&state)
-            };
-            let name = if group.project.is_some() {
-                format!("  {}", c.name)
-            } else {
-                c.name.clone()
-            };
-            if Some(view_idx) == selected_view_idx {
-                rendered_selected = Some(rows.len());
+    for entry in &render_rows {
+        match entry {
+            grouping::RenderRow::Header(group) => {
+                let collapsed = group
+                    .project
+                    .as_deref()
+                    .is_some_and(|p| app.collapsed_groups.contains(p));
+                let marker = if collapsed { "▸" } else { "▾" };
+                let project = group.project.as_deref().unwrap_or("");
+                let label = format!("{marker} {project} ({}/{})", group.running, group.total());
+                rows.push(Row::new(vec![label, String::new()]).style(group_header_style(focused)));
             }
-            rows.push(Row::new(vec![name, state]).style(style));
-            view_idx += 1;
+            grouping::RenderRow::Container {
+                view_idx,
+                container_idx,
+            } => {
+                let Some(c) = app.containers.get(*container_idx) else {
+                    continue;
+                };
+                let state = normalize_state(&c.state, &c.status);
+                let style = if focused {
+                    Style::default().fg(container_state_color(&state))
+                } else {
+                    dimmed(&state)
+                };
+                let name = if c.compose_project.is_some() {
+                    format!("    {}", c.name)
+                } else {
+                    c.name.clone()
+                };
+                if Some(*view_idx) == selected_view_idx {
+                    rendered_selected = Some(rows.len());
+                }
+                rows.push(Row::new(vec![name, state]).style(style));
+            }
         }
     }
 
