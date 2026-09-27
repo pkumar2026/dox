@@ -262,7 +262,7 @@ impl InsightsState {
 
     /// Snapshot right away (after a reset or a container switch).
     pub fn refresh_now(&mut self, now: Instant) {
-        self.snapshot = self.engine.snapshot(now);
+        self.engine.refresh_into(&mut self.snapshot, now);
         self.last_refresh = now;
     }
 }

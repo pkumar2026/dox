@@ -2,6 +2,7 @@
 //! depth 4, 50% similarity, 50 children per node, at most 100 patterns.
 //! Variable parts render as `***`.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use drain3::{Config, Matcher, Template};
@@ -20,11 +21,19 @@ pub struct PatternInfo {
     pub percent: f64,
 }
 
+/// A pattern as last seen: its text, line count, and shape (positions,
+/// literal tokens). The text only changes when the shape does.
+struct Cluster {
+    text: String,
+    count: u64,
+    shape: (usize, usize),
+}
+
 pub struct PatternMiner {
     matcher: Matcher,
-    /// Latest template text and count per pattern id. `drain3` only returns
-    /// the pattern a line joined, so the running list lives here.
-    clusters: HashMap<usize, (String, u64)>,
+    /// Patterns by id. `drain3` only returns the pattern a line joined, so the
+    /// running list lives here.
+    clusters: HashMap<usize, Cluster>,
     /// Lines turned away once the pattern limit was reached.
     overflow: u64,
 }
@@ -56,15 +65,25 @@ impl PatternMiner {
             self.overflow += 1;
             return;
         };
+        let count = template.count() as u64;
+        let shape = (template.token_count(), template.tokens().len());
+        if let Some(cluster) = self.clusters.get_mut(&template.id()) {
+            cluster.count = count;
+            if cluster.shape != shape {
+                cluster.text = render(&template);
+                cluster.shape = shape;
+            }
+            return;
+        }
         // `drain3` enforces its cluster limit on only one of its code paths,
         // so the limit is applied here as well.
-        let known = self.clusters.contains_key(&template.id());
-        if !known && self.clusters.len() >= MAX_PATTERNS {
+        if self.clusters.len() >= MAX_PATTERNS {
             self.overflow += 1;
             return;
         }
+        let text = render(&template);
         self.clusters
-            .insert(template.id(), (render(&template), template.count() as u64));
+            .insert(template.id(), Cluster { text, count, shape });
     }
 
     /// Number of distinct patterns.
@@ -74,7 +93,7 @@ impl PatternMiner {
 
     /// Lines that matched a pattern.
     pub fn total(&self) -> u64 {
-        self.clusters.values().map(|(_, count)| count).sum()
+        self.clusters.values().map(|c| c.count).sum()
     }
 
     /// Lines not counted because the pattern limit was reached.
@@ -88,10 +107,10 @@ impl PatternMiner {
         let mut all: Vec<PatternInfo> = self
             .clusters
             .values()
-            .map(|(template, count)| PatternInfo {
-                template: template.clone(),
-                count: *count,
-                percent: *count as f64 * 100.0 / total,
+            .map(|c| PatternInfo {
+                template: c.text.clone(),
+                count: c.count,
+                percent: c.count as f64 * 100.0 / total,
             })
             .collect();
         all.sort_by(|a, b| {
@@ -110,21 +129,26 @@ impl Default for PatternMiner {
     }
 }
 
-/// First `MAX_TOKENS` tokens, at most `MAX_BYTES` bytes (on a char boundary).
-fn clamp(message: &str) -> String {
+/// The message as is when within `drain3`'s limits; otherwise the first
+/// `MAX_TOKENS` tokens, at most `MAX_BYTES` bytes (on a char boundary).
+fn clamp(message: &str) -> Cow<'_, str> {
+    let trimmed = message.trim();
+    if trimmed.len() <= MAX_BYTES && trimmed.split_whitespace().count() <= MAX_TOKENS {
+        return Cow::Borrowed(trimmed);
+    }
     let joined = message
         .split_whitespace()
         .take(MAX_TOKENS)
         .collect::<Vec<_>>()
         .join(" ");
     if joined.len() <= MAX_BYTES {
-        return joined;
+        return Cow::Owned(joined);
     }
     let mut end = MAX_BYTES;
     while !joined.is_char_boundary(end) {
         end -= 1;
     }
-    joined[..end].to_string()
+    Cow::Owned(joined[..end].to_string())
 }
 
 /// Template text with `***` for variable parts, shortened for display.

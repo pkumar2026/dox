@@ -41,6 +41,8 @@ pub struct SeverityBreakdown {
 /// Everything the insights UI draws, computed on the refresh timer.
 #[derive(Debug, Clone, Default)]
 pub struct InsightsSnapshot {
+    /// Engine generation the lists were computed at (see `Insights::generation`).
+    pub generation: u64,
     pub words: Vec<(String, u64)>,
     /// Distinct words / field keys seen (the lists above are capped).
     pub word_count: usize,
@@ -75,6 +77,9 @@ pub struct Insights {
     stats: Stats,
     /// Lines per severity since the last `take_interval_counts`.
     interval: SeverityCounts,
+    /// Goes up on every line and every reset, so a snapshot can tell whether
+    /// its lists are stale (a line count alone repeats after a reset).
+    generation: u64,
 }
 
 impl Insights {
@@ -90,6 +95,7 @@ impl Insights {
             timeline: Timeline::new(),
             stats: Stats::new(),
             interval: [0; 6],
+            generation: 0,
         }
     }
 
@@ -100,17 +106,18 @@ impl Insights {
 
     /// Forget everything (container switch, stream restart, `r`).
     pub fn reset(&mut self, now: Instant) {
+        let generation = self.generation + 1;
         *self = Self::new(now);
+        self.generation = generation;
     }
 
     /// Count one log line that arrived at `now`.
     pub fn observe(&mut self, entry: &LogLine, now: Instant) {
+        self.generation += 1;
         let line = parse_entry(&entry.raw, entry.ts_len, entry.level);
         let second = now.saturating_duration_since(self.started).as_secs();
         self.stats.add(second, entry.raw.len());
-        for word in words::extract_words(&line.message) {
-            self.words.add(&word);
-        }
+        words::for_each_word(&line.message, |word| self.words.add(word));
         self.attributes.add(&line.attributes);
         self.patterns.add(&line.message);
         self.patterns_by_severity[line.severity.index()].add(&line.message);
@@ -131,34 +138,48 @@ impl Insights {
         self.attributes.values(key, n)
     }
 
-    pub fn snapshot(&self, now: Instant) -> InsightsSnapshot {
+    /// Update `snap` for `now`. The sorted lists are only rebuilt when lines
+    /// arrived (or a reset happened) since `snap` was taken; time-based fields
+    /// (per-minute window, rate, uptime) always move on.
+    pub fn refresh_into(&self, snap: &mut InsightsSnapshot, now: Instant) {
         let elapsed = now.saturating_duration_since(self.started).as_secs();
-        InsightsSnapshot {
-            words: self.words.top(SNAPSHOT_ROWS),
-            word_count: self.words.len(),
-            attribute_count: self.attributes.len(),
-            attributes: self.attributes.top(SNAPSHOT_ROWS),
-            patterns: self.patterns.top(SNAPSHOT_ROWS),
-            pattern_count: self.patterns.len(),
-            pattern_lines: self.patterns.total(),
-            pattern_overflow: self.patterns.overflow(),
-            per_minute: self.timeline.window(elapsed / 60),
-            totals: self.timeline.totals(),
-            by_severity: Severity::ALL
+        if snap.generation != self.generation {
+            snap.generation = self.generation;
+            snap.words = self.words.top(SNAPSHOT_ROWS);
+            snap.word_count = self.words.len();
+            snap.attribute_count = self.attributes.len();
+            snap.attributes = self.attributes.top(SNAPSHOT_ROWS);
+            snap.patterns = self.patterns.top(SNAPSHOT_ROWS);
+            snap.pattern_count = self.patterns.len();
+            snap.pattern_lines = self.patterns.total();
+            snap.pattern_overflow = self.patterns.overflow();
+            snap.by_severity = Severity::ALL
                 .iter()
                 .map(|s| SeverityBreakdown {
                     patterns: self.patterns_by_severity[s.index()].top(PER_SEVERITY_TOP),
                     services: self.timeline.top_services(*s, PER_SEVERITY_TOP),
                 })
-                .collect(),
-            services: self.services.top(SNAPSHOT_ROWS),
-            hosts: self.hosts.top(SNAPSHOT_ROWS),
-            total_lines: self.stats.total_lines,
-            total_bytes: self.stats.total_bytes,
-            current_rate: self.stats.current_rate(elapsed),
-            peak_rate: self.stats.peak_rate(),
-            uptime_secs: elapsed,
+                .collect();
+            snap.services = self.services.top(SNAPSHOT_ROWS);
+            snap.hosts = self.hosts.top(SNAPSHOT_ROWS);
+            snap.totals = self.timeline.totals();
+            snap.total_lines = self.stats.total_lines;
+            snap.total_bytes = self.stats.total_bytes;
+            snap.peak_rate = self.stats.peak_rate();
         }
+        snap.per_minute = self.timeline.window(elapsed / 60);
+        snap.current_rate = self.stats.current_rate(elapsed);
+        snap.uptime_secs = elapsed;
+    }
+
+    #[cfg(test)]
+    pub fn snapshot(&self, now: Instant) -> InsightsSnapshot {
+        let mut snap = InsightsSnapshot {
+            generation: u64::MAX,
+            ..InsightsSnapshot::default()
+        };
+        self.refresh_into(&mut snap, now);
+        snap
     }
 }
 
@@ -227,6 +248,37 @@ mod tests {
         assert_eq!(first[Severity::Info.index()], 2);
         assert_eq!(first[Severity::Error.index()], 1);
         assert_eq!(i.take_interval_counts(), [0; 6]);
+    }
+
+    #[test]
+    fn refresh_into_updates_time_fields_and_reuses_unchanged_lists() {
+        let (i, now) = fed();
+        let mut snap = InsightsSnapshot::default();
+        i.refresh_into(&mut snap, now);
+        let words = snap.words.clone();
+        assert!(!words.is_empty());
+        // Nothing new: lists stay; time-based fields still move on.
+        snap.words.push(("sentinel".into(), 0));
+        i.refresh_into(&mut snap, now + std::time::Duration::from_secs(90));
+        assert_eq!(snap.words.last().map(|(w, _)| w.as_str()), Some("sentinel"));
+        assert_eq!(snap.uptime_secs, 90);
+    }
+
+    #[test]
+    fn a_switch_with_the_same_line_count_still_rebuilds_the_lists() {
+        let now = Instant::now();
+        let mut i = Insights::new(now);
+        let mut snap = InsightsSnapshot::default();
+        i.observe(&LogLine::from_raw("alpha alpha".into()), now);
+        i.refresh_into(&mut snap, now);
+        assert_eq!(snap.words[0].0, "alpha");
+        i.reset(now);
+        i.observe(&LogLine::from_raw("omega omega".into()), now);
+        i.refresh_into(&mut snap, now);
+        assert_eq!(
+            snap.words[0].0, "omega",
+            "old container's words must not linger"
+        );
     }
 
     #[test]

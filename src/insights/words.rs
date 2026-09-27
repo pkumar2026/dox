@@ -13,11 +13,11 @@ const STOP_WORDS: &[&str] = &[
     "before", "between", "during", "around", "through", "across", "against", "without",
 ];
 
-/// Words in `message` that count toward Top Words.
-pub fn extract_words(message: &str) -> Vec<String> {
+/// Call `f` with each word in `message` that counts toward Top Words.
+/// One lowercase copy per message; no allocation per word.
+pub fn for_each_word(message: &str, mut f: impl FnMut(&str)) {
     let lower = message.to_ascii_lowercase();
     let bytes = lower.as_bytes();
-    let mut words = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let starts_word = bytes[i].is_ascii_alphabetic() || bytes[i] == b'_';
@@ -31,9 +31,16 @@ pub fn extract_words(message: &str) -> Vec<String> {
         }
         let word = &lower[start..i];
         if word.len() >= MIN_WORD_LEN && !STOP_WORDS.contains(&word) {
-            words.push(word.to_string());
+            f(word);
         }
     }
+}
+
+/// The words of `message`, collected (tests).
+#[cfg(test)]
+pub fn extract_words(message: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    for_each_word(message, |w| words.push(w.to_string()));
     words
 }
 

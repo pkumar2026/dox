@@ -33,15 +33,21 @@ impl FrequencyTable {
         self.counts.len()
     }
 
-    /// Top `n` terms, highest count first, ties alphabetical.
+    /// Top `n` terms, highest count first, ties alphabetical. Selects the
+    /// top `n` first and sorts only those, not the whole table.
     pub fn top(&self, n: usize) -> Vec<(String, u64)> {
+        let order =
+            |a: &(&String, &u64), b: &(&String, &u64)| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0));
         let mut entries: Vec<(&String, &u64)> = self.counts.iter().collect();
-        entries.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
-        entries
-            .into_iter()
-            .take(n)
-            .map(|(k, v)| (k.clone(), *v))
-            .collect()
+        if n == 0 {
+            return Vec::new();
+        }
+        if n < entries.len() {
+            entries.select_nth_unstable_by(n - 1, order);
+            entries.truncate(n);
+        }
+        entries.sort_by(order);
+        entries.into_iter().map(|(k, v)| (k.clone(), *v)).collect()
     }
 
     fn prune(&mut self) {
@@ -70,6 +76,24 @@ mod tests {
         t.add("zeta");
         t.add("alpha");
         assert_eq!(t.top(5)[0].0, "alpha");
+    }
+
+    #[test]
+    fn partial_top_matches_a_full_sort() {
+        let mut t = FrequencyTable::new(10_000);
+        let mut state: u64 = 7;
+        for _ in 0..20_000 {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            // Skewed distribution with many ties.
+            let k = ((state >> 33) % 97) * ((state >> 40) % 7);
+            t.add(&format!("w{k}"));
+        }
+        let mut all: Vec<(String, u64)> = t.counts.iter().map(|(k, v)| (k.clone(), *v)).collect();
+        all.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for n in [0, 1, 3, 10, 50, 100, all.len(), all.len() + 5] {
+            let expected: Vec<(String, u64)> = all.iter().take(n).cloned().collect();
+            assert_eq!(t.top(n), expected, "n = {n}");
+        }
     }
 
     #[test]

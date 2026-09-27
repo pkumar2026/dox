@@ -30,14 +30,16 @@ impl AttributeTable {
     }
 
     pub fn add(&mut self, attributes: &[(String, String)]) {
-        let max_values = self.max_values;
         for (key, value) in attributes {
-            let (total, values) = self
-                .keys
-                .entry(key.clone())
-                .or_insert_with(|| (0, FrequencyTable::new(max_values)));
-            *total += 1;
+            // Look up by `&str` first: the key is only copied when it is new.
+            if let Some((total, values)) = self.keys.get_mut(key.as_str()) {
+                *total += 1;
+                values.add(value);
+                continue;
+            }
+            let mut values = FrequencyTable::new(self.max_values);
             values.add(value);
+            self.keys.insert(key.clone(), (1, values));
         }
         if self.keys.len() > self.max_keys {
             self.prune();
