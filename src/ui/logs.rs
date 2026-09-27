@@ -146,53 +146,65 @@ pub enum LogLevel {
     Other,
 }
 
-/// Heuristic level detection. Scans the first ~120 chars for whole-word matches
-/// against common level tokens, in priority order. Handles `[ERROR]`, ` ERR `,
-/// `level=warn`, `klog`-style letters, etc. — but it's a heuristic, not a parser.
+/// Bytes at the start of each line searched for a level word.
+const LEVEL_SCAN_BYTES: usize = 120;
+
+/// Level words, grouped by level in the order `locate_level_word` prefers.
+const LEVEL_WORDS: [(&str, LogLevel); 12] = [
+    ("FATAL", LogLevel::Fatal),
+    ("PANIC", LogLevel::Fatal),
+    ("CRITICAL", LogLevel::Fatal),
+    ("ERROR", LogLevel::Error),
+    ("ERR", LogLevel::Error),
+    ("WARNING", LogLevel::Warn),
+    ("WARN", LogLevel::Warn),
+    ("INFO", LogLevel::Info),
+    ("NOTICE", LogLevel::Info),
+    ("DEBUG", LogLevel::Debug),
+    ("DBG", LogLevel::Debug),
+    ("TRACE", LogLevel::Trace),
+];
+
+/// Heuristic level detection. Scans the first ~120 bytes for whole-word matches
+/// against common level tokens; the most severe level found wins. Handles
+/// `[ERROR]`, ` ERR `, `level=warn`, etc. — but it's a heuristic, not a parser.
+///
+/// Works on bytes in one pass, so a multi-byte character at the edge of the
+/// window can't split a string slice.
 pub fn detect_level(line: &str) -> LogLevel {
-    let scan_len = line.len().min(120);
-    let scan: String = line[..scan_len].to_ascii_uppercase();
-    if has_token(&scan, "FATAL") || has_token(&scan, "PANIC") || has_token(&scan, "CRITICAL") {
-        return LogLevel::Fatal;
-    }
-    if has_token(&scan, "ERROR") || has_token(&scan, "ERR") {
-        return LogLevel::Error;
-    }
-    if has_token(&scan, "WARNING") || has_token(&scan, "WARN") {
-        return LogLevel::Warn;
-    }
-    if has_token(&scan, "INFO") || has_token(&scan, "NOTICE") {
-        return LogLevel::Info;
-    }
-    if has_token(&scan, "DEBUG") || has_token(&scan, "DBG") {
-        return LogLevel::Debug;
-    }
-    if has_token(&scan, "TRACE") {
-        return LogLevel::Trace;
-    }
-    LogLevel::Other
+    let bytes = line.as_bytes();
+    level_words(line)
+        .filter_map(|r| word_level(&bytes[r]))
+        .min_by_key(|level| *level as u8)
+        .unwrap_or(LogLevel::Other)
 }
 
-fn has_token(haystack: &str, word: &str) -> bool {
-    let bytes = haystack.as_bytes();
-    let wb = word.as_bytes();
-    let n = bytes.len();
-    let w = wb.len();
-    if w == 0 || w > n {
-        return false;
-    }
+/// Byte ranges of the words (`[A-Za-z0-9_]+`) in the scanned window. A word
+/// cut by the window edge ends there.
+fn level_words(line: &str) -> impl Iterator<Item = std::ops::Range<usize>> + '_ {
+    let bytes = &line.as_bytes()[..line.len().min(LEVEL_SCAN_BYTES)];
     let mut i = 0;
-    while i + w <= n {
-        if &bytes[i..i + w] == wb {
-            let pre_ok = i == 0 || !is_word_char(bytes[i - 1]);
-            let post_ok = i + w == n || !is_word_char(bytes[i + w]);
-            if pre_ok && post_ok {
-                return true;
-            }
+    std::iter::from_fn(move || {
+        while i < bytes.len() && !is_word_char(bytes[i]) {
+            i += 1;
         }
-        i += 1;
-    }
-    false
+        if i == bytes.len() {
+            return None;
+        }
+        let start = i;
+        while i < bytes.len() && is_word_char(bytes[i]) {
+            i += 1;
+        }
+        Some(start..i)
+    })
+}
+
+/// The level one word names, ignoring ASCII case.
+fn word_level(word: &[u8]) -> Option<LogLevel> {
+    LEVEL_WORDS
+        .iter()
+        .find(|(w, _)| w.as_bytes().eq_ignore_ascii_case(word))
+        .map(|(_, level)| *level)
 }
 
 fn is_word_char(b: u8) -> bool {
@@ -310,40 +322,21 @@ fn style_entry(entry: &LogLine, selected: bool) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Split `haystack` around the word that gave it `level`, for highlighting.
+/// Split points are word edges (ASCII bytes), so they are always valid.
 fn locate_level_word(haystack: &str, level: LogLevel) -> Option<(&str, &str, &str)> {
-    let tokens: &[&str] = match level {
-        LogLevel::Fatal => &["FATAL", "PANIC", "CRITICAL"],
-        LogLevel::Error => &["ERROR", "ERR"],
-        LogLevel::Warn => &["WARNING", "WARN"],
-        LogLevel::Info => &["INFO", "NOTICE"],
-        LogLevel::Debug => &["DEBUG", "DBG"],
-        LogLevel::Trace => &["TRACE"],
-        LogLevel::Other => return None,
-    };
-    let scan_len = haystack.len().min(120);
-    let upper: String = haystack[..scan_len].to_ascii_uppercase();
-    let upper_bytes = upper.as_bytes();
-    for &tok in tokens {
-        let tb = tok.as_bytes();
-        if tb.len() > upper_bytes.len() {
-            continue;
-        }
-        let mut i = 0;
-        while i + tb.len() <= upper_bytes.len() {
-            if &upper_bytes[i..i + tb.len()] == tb {
-                let pre_ok = i == 0 || !is_word_char(upper_bytes[i - 1]);
-                let post_ok =
-                    i + tb.len() == upper_bytes.len() || !is_word_char(upper_bytes[i + tb.len()]);
-                if pre_ok && post_ok {
-                    let (a, b) = haystack.split_at(i);
-                    let (b, c) = b.split_at(tb.len());
-                    return Some((a, b, c));
-                }
-            }
-            i += 1;
-        }
-    }
-    None
+    let bytes = haystack.as_bytes();
+    let range = LEVEL_WORDS
+        .iter()
+        .filter(|(_, l)| *l == level)
+        .find_map(|(word, _)| {
+            level_words(haystack).find(|r| bytes[r.clone()].eq_ignore_ascii_case(word.as_bytes()))
+        })?;
+    Some((
+        &haystack[..range.start],
+        &haystack[range.clone()],
+        &haystack[range.end..],
+    ))
 }
 
 /// Compute the half-open `[start, end)` line range to render.
@@ -586,6 +579,136 @@ mod tests {
     fn visible_range_zero_buffer_or_height() {
         assert_eq!(visible_range(0, 30, 0, true), (0, 0));
         assert_eq!(visible_range(100, 0, 50, false), (0, 0));
+    }
+
+    /// The pre-0.3.1 detector, kept to prove the rewrite gives the same
+    /// answers. Only used on ASCII input: it sliced `&str` at byte 120, which
+    /// panicked when a multi-byte character straddled that byte.
+    fn detect_level_reference(line: &str) -> LogLevel {
+        let scan_len = line.len().min(120);
+        let scan: String = line[..scan_len].to_ascii_uppercase();
+        let has = |w: &str| reference_find(&scan, w).is_some();
+        if has("FATAL") || has("PANIC") || has("CRITICAL") {
+            return LogLevel::Fatal;
+        }
+        if has("ERROR") || has("ERR") {
+            return LogLevel::Error;
+        }
+        if has("WARNING") || has("WARN") {
+            return LogLevel::Warn;
+        }
+        if has("INFO") || has("NOTICE") {
+            return LogLevel::Info;
+        }
+        if has("DEBUG") || has("DBG") {
+            return LogLevel::Debug;
+        }
+        if has("TRACE") {
+            return LogLevel::Trace;
+        }
+        LogLevel::Other
+    }
+
+    fn reference_find(upper: &str, word: &str) -> Option<usize> {
+        let (h, w) = (upper.as_bytes(), word.as_bytes());
+        (0..=h.len().saturating_sub(w.len())).find(|&i| {
+            h.len() >= w.len()
+                && &h[i..i + w.len()] == w
+                && (i == 0 || !is_word_char(h[i - 1]))
+                && (i + w.len() == h.len() || !is_word_char(h[i + w.len()]))
+        })
+    }
+
+    fn locate_reference(haystack: &str, level: LogLevel) -> Option<(usize, usize)> {
+        let tokens: &[&str] = match level {
+            LogLevel::Fatal => &["FATAL", "PANIC", "CRITICAL"],
+            LogLevel::Error => &["ERROR", "ERR"],
+            LogLevel::Warn => &["WARNING", "WARN"],
+            LogLevel::Info => &["INFO", "NOTICE"],
+            LogLevel::Debug => &["DEBUG", "DBG"],
+            LogLevel::Trace => &["TRACE"],
+            LogLevel::Other => return None,
+        };
+        let upper = haystack[..haystack.len().min(120)].to_ascii_uppercase();
+        tokens
+            .iter()
+            .find_map(|t| reference_find(&upper, t).map(|i| (i, i + t.len())))
+    }
+
+    /// Deterministic pseudo-random lines with level words near the 120-byte edge.
+    fn generated_lines(n: usize) -> Vec<String> {
+        const WORDS: &str = "ERROR error ERR Err WARN warning INFO info NOTICE DEBUG dbg TRACE \
+            FATAL panic CRITICAL errors INFO_x xINFO [ERROR] level=warn req 42 user_id a bb \
+            INFORMATION WARNINGS";
+        let words: Vec<&str> = WORDS.split_whitespace().collect();
+        const SEPS: &[&str] = &[" ", "  ", "=", ":", "[", "]", "_", "-", ",", "|"];
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut next = |m: usize| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 33) as usize) % m
+        };
+        (0..n)
+            .map(|_| {
+                let target = 100 + next(40);
+                let mut line = String::new();
+                while line.len() < target {
+                    line.push_str(words[next(words.len())]);
+                    line.push_str(SEPS[next(SEPS.len())]);
+                }
+                line
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rewrite_matches_the_old_detector() {
+        for line in generated_lines(20_000) {
+            let level = detect_level(&line);
+            assert_eq!(level, detect_level_reference(&line), "detect: {line:?}");
+            let found =
+                locate_level_word(&line, level).map(|(a, b, _)| (a.len(), a.len() + b.len()));
+            assert_eq!(found, locate_reference(&line, level), "locate: {line:?}");
+        }
+    }
+
+    #[test]
+    fn multibyte_characters_at_any_offset_never_panic() {
+        let columns = crate::insights_ui::picker::Columns {
+            level: true,
+            service: true,
+            fields: vec!["k".into()],
+            ..Default::default()
+        };
+        let opts = crate::ui::log_rows::RowOptions {
+            columns: &columns,
+            search: Some("error"),
+            h_scroll: 3,
+        };
+        for ch in ["é", "€", "😀"] {
+            for offset in 80..=160 {
+                for prefix in ["", "2026-09-26T10:00:00.000000000Z "] {
+                    for body in [
+                        format!("{}{ch} ERROR tail k=v", "a".repeat(offset)),
+                        format!("INFO {}{ch} tail", "a".repeat(offset)),
+                        format!(
+                            "{{\"level\":\"warn\",\"msg\":\"{}{ch}\"}}",
+                            "a".repeat(offset)
+                        ),
+                    ] {
+                        let line = format!("{prefix}{body}");
+                        let mut b = LogBuffer::new(1);
+                        b.push(line.clone());
+                        let entry = b.entry(0).expect("pushed");
+                        let _ = style_entry(entry, false);
+                        let _ = crate::ui::log_rows::render_row(entry, &opts);
+                        let _ = crate::insights::parse::parse_line(&line);
+                        let _ = crate::insights_ui::detail::detail(&line);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

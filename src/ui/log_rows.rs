@@ -92,13 +92,10 @@ fn highlight(text: &str, term: Option<&str>, base: Style) -> Vec<Span<'static>> 
     let Some(term) = term.filter(|t| !t.is_empty()) else {
         return vec![Span::styled(text.to_string(), base)];
     };
-    let lower = text.to_lowercase();
-    let needle = term.to_lowercase();
-    // Lowercasing can change byte lengths for non-ASCII text; fall back to
-    // no highlighting rather than slice at a wrong offset.
-    if lower.len() != text.len() {
-        return vec![Span::styled(text.to_string(), base)];
-    }
+    // ASCII-only lowercasing keeps every byte offset, so match positions are
+    // valid places to cut `text` (Unicode lowercasing can change lengths).
+    let lower = text.to_ascii_lowercase();
+    let needle = term.to_ascii_lowercase();
     let mut spans = Vec::new();
     let mut last = 0;
     for (at, _) in lower.match_indices(&needle) {
@@ -177,6 +174,17 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(hits, vec!["Api", "api"]);
+    }
+
+    #[test]
+    fn search_is_safe_around_multibyte_text() {
+        let spans = highlight("İstanbul ERROR é İ error", Some("error"), Style::default());
+        let hits: Vec<&str> = spans
+            .iter()
+            .filter(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(hits, vec!["ERROR", "error"]);
     }
 
     #[test]

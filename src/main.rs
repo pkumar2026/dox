@@ -13,6 +13,7 @@ use std::io;
 
 use anyhow::Result;
 use clap::Parser;
+use crossterm::cursor::Show;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -90,6 +91,7 @@ async fn main() -> Result<()> {
 }
 
 async fn run_tui(client: docker::DockerClient, cfg: config::Config) -> Result<()> {
+    install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -110,6 +112,27 @@ async fn run_tui(client: docker::DockerClient, cfg: config::Config) -> Result<()
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     result
+}
+
+/// If the UI thread panics, put the terminal back (raw mode off, main screen,
+/// no mouse capture, cursor shown) before the panic message prints; otherwise
+/// the user's shell is left unusable. Panics in background tasks are caught by
+/// tokio and must not tear down a running UI, so only the main thread restores.
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() == Some("main") {
+            let _ = disable_raw_mode();
+            let _ = execute!(
+                io::stdout(),
+                DisableMouseCapture,
+                LeaveAlternateScreen,
+                Show
+            );
+        }
+        tracing::error!(%info, "panic");
+        previous(info);
+    }));
 }
 
 fn init_tracing() -> Option<tracing_appender::non_blocking::WorkerGuard> {
