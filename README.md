@@ -120,6 +120,36 @@ By default `dox` looks for a daemon in this order:
 Every destructive action goes through a confirmation modal. Only `y` (lowercase) confirms;
 any other key cancels.
 
+### Log insights
+
+A row of four boxes above the logs shows what the container's logs contain, computed in dox
+from the lines it already streams (a native take on [Gonzo](https://github.com/control-theory/gonzo)'s
+dashboard): **Top Words**, **Top Attributes** (`key=value` and JSON fields, most distinct
+values first), **Log Patterns** (Drain clustering via the `drain3` crate) and **Log Counts**
+(stacked severity bars, one per refresh, with the latest counts). Counts start over when you
+switch containers. The row shows when the log area is at least 100 columns wide.
+
+Press `Enter` on a container to focus its logs; these keys then apply (dox's container
+actions are ignored there, so `s`/`r` mean search/reset):
+
+| key                 | action                                                              |
+|---------------------|---------------------------------------------------------------------|
+| `Tab` / `Shift-Tab` | move between logs, words, attributes, patterns, counts              |
+| `↑` `↓` `k` `j`     | move the cursor (in the logs this pauses follow; `End` resumes)     |
+| `Enter`             | log line details · highlight a word · a field's values · all patterns · counts analysis (60-minute heatmap, top patterns and services per severity) |
+| `/`                 | regex filter on the log lines (live; `Enter` keeps, `Esc` clears)   |
+| `s`                 | search and highlight text in the logs                               |
+| `Ctrl+f`            | severity filter (toggle levels with `Space`, apply with `Enter`)    |
+| `C`                 | columns: time, level, service, host, discovered fields              |
+| `f`                 | full-screen log viewer                                              |
+| `i`                 | statistics (totals, rate, severity split, pattern compression)      |
+| `u` / `U`           | slower / faster refresh (0.5s to 1m)                                |
+| `Space`             | pause the insights (logs keep buffering)                            |
+| `r`                 | reset the insights                                                  |
+| `←` `→` `h` `l`     | scroll log lines sideways                                           |
+| `y` / `Ctrl+y`      | in details: copy the message / the whole entry                      |
+| `Esc`               | close a popup, or leave the logs                                    |
+
 ## Config
 
 Optional. Create `~/.config/dox/config.toml`:

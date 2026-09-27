@@ -27,7 +27,11 @@ use crate::docker::DockerClient;
 use crate::events::{self, Action, Mode};
 use crate::grouping;
 use crate::grouping::{build_groups, flatten_selectable, Group};
+use crate::insights_ui::InsightsState;
+use crate::logview::LogView;
 use crate::ui::logs::{LogBuffer, Selection};
+
+mod insights_actions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -235,6 +239,9 @@ pub struct App {
     /// Interior rect of each resource panel (row 0 of each is the table header).
     pub last_panel_inner: [Rect; 4],
 
+    /// Gonzo-style insights: side panel, popups, log filter/search/columns.
+    pub insights: InsightsState,
+
     /// Filtered row indices per panel, in `Panel::index()` order. Rebuilt only
     /// by `recompute_visible`; see `visible_containers` for why.
     visible: [Vec<usize>; 4],
@@ -303,6 +310,7 @@ impl App {
             last_header_y: 0,
             last_tab_spans: [(0, 0); 4],
             last_panel_inner: [Rect::default(); 4],
+            insights: InsightsState::new(Instant::now()),
             visible: Default::default(),
             refresh_started: None,
         }
@@ -355,6 +363,11 @@ impl App {
 
     pub fn set_toast(&mut self, msg: impl Into<String>) {
         self.toast = Some((msg.into(), Instant::now()));
+    }
+
+    /// The log lines on screen: all of them, or those passing the filter.
+    pub fn log_view(&self) -> LogView<'_> {
+        LogView::new(&self.logs, self.insights.filtered.as_ref())
     }
 
     pub fn current_panel_count(&self) -> usize {
@@ -559,9 +572,11 @@ impl App {
     pub fn ingest_msg(&mut self, msg: AppMsg) {
         match msg {
             AppMsg::LogChunk(chunk) => {
-                self.logs.extend_chunk(&chunk);
+                let added = self.logs.extend_chunk(&chunk);
+                self.insights
+                    .on_log_chunk(&chunk, &self.logs, added, Instant::now());
                 if self.logs_follow {
-                    self.logs_scroll = self.logs.len();
+                    self.logs_scroll = self.log_view().len();
                 }
                 if let LogStreamState::Starting { container_name }
                 | LogStreamState::Streaming { container_name, .. } =
@@ -750,6 +765,9 @@ impl App {
         if !self.mouse_on {
             return;
         }
+        if self.handle_insights_mouse(&m) {
+            return;
+        }
         match m.kind {
             MouseEventKind::ScrollUp => self.wheel(m.column, m.row, -3),
             MouseEventKind::ScrollDown => self.wheel(m.column, m.row, 3),
@@ -908,7 +926,7 @@ impl App {
         if !contains(self.last_log_inner, col, row) {
             return None;
         }
-        let total = self.logs.len();
+        let total = self.log_view().len();
         if total == 0 {
             return None;
         }
@@ -951,6 +969,10 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        if self.insights_has_keyboard() {
+            self.handle_insights_key(key);
+            return;
+        }
         let Some(action) = events::map(key, self.mode) else {
             return;
         };
@@ -967,11 +989,9 @@ impl App {
             Action::SelectNext => {
                 if matches!(self.focus, FocusArea::Detail) {
                     self.scroll_logs(1);
+                    let max = self.log_view().len().saturating_sub(1);
                     if let Some(sel) = self.visual_select.as_mut() {
-                        sel.cursor = sel
-                            .cursor
-                            .saturating_add(1)
-                            .min(self.logs.len().saturating_sub(1));
+                        sel.cursor = sel.cursor.saturating_add(1).min(max);
                     }
                 } else {
                     // move_selection schedules the debounced log follow.
@@ -998,7 +1018,7 @@ impl App {
             }
             Action::SelectBottom => {
                 if matches!(self.focus, FocusArea::Detail) {
-                    self.logs_scroll = self.logs.len();
+                    self.logs_scroll = self.log_view().len();
                     self.logs_follow = true;
                 } else {
                     self.jump(false);
@@ -1026,7 +1046,7 @@ impl App {
             }
             Action::LogJumpBottom => {
                 self.logs_follow = true;
-                self.logs_scroll = self.logs.len();
+                self.logs_scroll = self.log_view().len();
             }
             Action::FocusDetail => {
                 if matches!(self.panel, Panel::Containers) {
@@ -1050,17 +1070,17 @@ impl App {
                 // Pressing it while already following is a harmless no-op.
                 // To pause follow, scroll up (any of K, PageUp, wheel, k).
                 self.logs_follow = true;
-                self.logs_scroll = self.logs.len();
+                self.logs_scroll = self.log_view().len();
             }
             Action::EnterVisualMode => {
-                if self.logs.is_empty() {
+                if self.log_view().is_empty() {
                     self.set_toast("no logs to select");
                 } else {
                     // Auto-focus the log pane so arrows extend selection here.
                     self.focus = FocusArea::Detail;
                     self.logs_follow = false;
                     // Anchor at the bottom of what's currently on screen.
-                    let total = self.logs.len();
+                    let total = self.log_view().len();
                     let pos = if self.logs_scroll == 0 {
                         total.saturating_sub(1)
                     } else {
@@ -1078,9 +1098,9 @@ impl App {
             Action::YankSelection => {
                 let text = if let Some(sel) = self.visual_select {
                     let (lo, hi) = sel.range();
-                    self.logs.collect_range(lo, hi)
+                    self.log_view().collect_range(lo, hi)
                 } else {
-                    self.logs.collect_all()
+                    self.log_view().collect_all()
                 };
                 tracing::info!(
                     bytes = text.len(),
@@ -1185,8 +1205,8 @@ impl App {
         }
 
         // recompute selection clamps for log buffer
+        let max = self.log_view().len().saturating_sub(1);
         if let Some(sel) = self.visual_select.as_mut() {
-            let max = self.logs.len().saturating_sub(1);
             sel.cursor = sel.cursor.min(max);
             sel.anchor = sel.anchor.min(max);
         }
@@ -1216,10 +1236,10 @@ impl App {
     }
 
     fn extend_visual(&mut self, delta: isize) {
+        let max = self.log_view().len().saturating_sub(1);
         let Some(sel) = self.visual_select.as_mut() else {
             return;
         };
-        let max = self.logs.len().saturating_sub(1);
         if delta >= 0 {
             sel.cursor = (sel.cursor + delta as usize).min(max);
         } else {
@@ -1230,7 +1250,7 @@ impl App {
     fn scroll_logs(&mut self, delta: isize) {
         let before = self.logs_scroll;
         let before_follow = self.logs_follow;
-        let max = self.logs.len();
+        let max = self.log_view().len();
         let h = self.last_log_height.max(1);
 
         // Seed scroll to current bottom when transitioning out of follow on scroll-up.
@@ -1394,6 +1414,7 @@ impl App {
             handle.abort();
         }
         self.logs.clear();
+        self.insights.on_stream_restart(&self.logs, Instant::now());
         self.logs_scroll = 0;
         self.logs_follow = true;
         self.log_container_id = Some(id.clone());
@@ -1599,6 +1620,9 @@ where
     let mut ticks: u64 = 0;
 
     loop {
+        if app.insights.refresh_if_due(Instant::now()) {
+            dirty = true;
+        }
         // Draw only if state changed AND the frame budget has elapsed.
         if dirty && last_draw.elapsed() >= FRAME_BUDGET {
             terminal.draw(|f| crate::ui::draw(f, &mut app))?;
@@ -1658,6 +1682,9 @@ where
                     app.ingest_msg(more);
                 }
                 dirty = true;
+            }
+            _ = tokio::time::sleep(app.insights.time_until_refresh(Instant::now())), if !app.insights.paused => {
+                // Wake up for the insights refresh interval.
             }
             _ = tokio::time::sleep(until_next_frame), if dirty => {
                 // Wake up to render the pending dirty frame.

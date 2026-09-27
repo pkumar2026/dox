@@ -27,6 +27,13 @@ const ENTRIES: &[(&str, &str)] = &[
     ("drag", "panel/log border resizes · in logs selects lines"),
     ("R", "restart the log stream for selected container"),
     ("+ / - / =", "grow / shrink / reset top panels area"),
+    ("— logs focused —", "Enter on a container, then these keys:"),
+    ("Tab / Enter", "next section / open it (details, counts…)"),
+    ("/ · s", "regex filter / search highlight (Esc clears)"),
+    ("Ctrl+f · C", "severity filter / log columns"),
+    ("f · i", "full-screen logs / stats"),
+    ("Space · r", "pause insights / reset insights"),
+    ("u / U · End", "slower / faster refresh / back to live logs"),
     ("?", "this help"),
     ("q / Ctrl-C", "quit"),
 ];

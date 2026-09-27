@@ -1,5 +1,11 @@
 pub mod confirm;
 pub mod help;
+pub mod insights_charts;
+pub mod insights_counts;
+pub mod insights_modals;
+pub mod insights_panel;
+pub mod insights_stats;
+pub mod log_rows;
 pub mod logs;
 pub mod panels;
 
@@ -29,6 +35,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_header(frame, chunks[0], app);
     draw_body(frame, chunks[1], app);
     draw_footer(frame, chunks[2], app);
+    insights_modals::draw(frame, area, app);
 
     if app.mode_is_confirm() {
         confirm::draw(frame, area, app);
@@ -183,10 +190,29 @@ fn draw_panel(frame: &mut Frame, area: Rect, app: &mut App, panel: Panel) {
     panels::draw(frame, inner, app, panel);
 }
 
+/// Smallest log area that still gets the insights row above the logs.
+const INSIGHTS_MIN_WIDTH: u16 = 100;
+const INSIGHTS_MIN_LOG_ROWS: u16 = 8;
+
 fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
-    let focused = matches!(app.focus, FocusArea::Detail);
+    let fits = area.width >= INSIGHTS_MIN_WIDTH
+        && area.height >= insights_panel::ROW_HEIGHT + INSIGHTS_MIN_LOG_ROWS;
+    let area = if fits {
+        let [row_area, logs_area] = Layout::vertical([
+            Constraint::Length(insights_panel::ROW_HEIGHT),
+            Constraint::Fill(1),
+        ])
+        .areas(area);
+        insights_panel::draw(frame, row_area, app);
+        logs_area
+    } else {
+        app.insights.box_areas = [Rect::default(); 4];
+        area
+    };
+    let focused = matches!(app.focus, FocusArea::Detail)
+        && app.insights.section == crate::insights_ui::Section::Logs;
     let label = app.active_log_label();
-    let total = app.logs.len();
+    let total = app.log_view().len();
     let inner_h = area.height.saturating_sub(2) as usize;
     let first_visible = if app.logs_follow {
         total.saturating_sub(inner_h)
@@ -197,7 +223,7 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     let follow_marker = if app.logs_follow {
         " [follow]"
     } else {
-        " [PAUSED — f to resume]"
+        logs::paused_marker(app)
     };
     let ports = app.active_log_ports();
     let ports_suffix = if ports.is_empty() {
@@ -206,13 +232,14 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
         format!("  ports: {ports}")
     };
     let title = format!(
-        " Logs: {}{}  {}-{}/{}{} ",
+        " Logs: {}{}  {}-{}/{}{}{} ",
         label,
         ports_suffix,
         first_visible.saturating_add(if total == 0 { 0 } else { 1 }),
         last_visible,
         total,
         follow_marker,
+        insights_markers(app),
     );
     let block = Block::default()
         .borders(Borders::ALL)
@@ -229,6 +256,30 @@ fn draw_logs(frame: &mut Frame, area: Rect, app: &mut App) {
     logs::draw(frame, inner, app);
 }
 
+/// Filter, search and pause state shown in the log title.
+fn insights_markers(app: &App) -> String {
+    let i = &app.insights;
+    let mut parts = Vec::new();
+    if !i.filter_text.is_empty() {
+        parts.push(format!("filter /{}/", i.filter_text));
+    }
+    let shown = i.filter.hidden.iter().filter(|h| !**h).count();
+    if shown < 6 {
+        parts.push(format!("levels {shown}/6"));
+    }
+    if let Some(term) = &i.search {
+        parts.push(format!("search '{term}'"));
+    }
+    if i.paused {
+        parts.push("insights paused".to_string());
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", parts.join(" · "))
+    }
+}
+
 fn panel_title_for(app: &App, panel: Panel) -> String {
     let label = PANEL_TITLES[panel.index()];
     let count = app.visible_len(panel);
@@ -243,8 +294,18 @@ fn panel_title_for(app: &App, panel: Panel) -> String {
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let txt = if app.mode_is_filtering() {
+    let txt = if let Some(input) = &app.insights.input {
+        let prompt = match input.kind {
+            crate::insights_ui::InputKind::Filter => "filter (regex) /",
+            crate::insights_ui::InputKind::Search => "search: ",
+        };
+        format!(" {prompt}{}_   Enter: keep  Esc: clear", input.text)
+    } else if app.mode_is_filtering() {
         format!(" /{}_", app.filter_query())
+    } else if matches!(app.focus, FocusArea::Detail)
+        && matches!(app.mode, crate::events::Mode::Normal)
+    {
+        " Tab: section  ↑↓: move  Enter: open  /: filter  s: search  Ctrl+f: levels  f: fullscreen  C: columns  i: stats  u/U: refresh  Space: pause  r: reset  y: copy  Esc: back ".into()
     } else {
         " Tab/←→/1-4: panel  ↑↓: nav  Enter: view logs  Esc: back  x/s/r: stop/start/restart  d: delete  D: prune  f: follow  v: select  y: copy  /: filter  ?: help  q: quit ".into()
     };

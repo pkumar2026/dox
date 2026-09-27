@@ -48,11 +48,26 @@ impl LogBuffer {
         });
     }
 
-    pub fn extend_chunk(&mut self, chunk: &str) {
+    /// Append a chunk's lines; returns how many lines were added.
+    pub fn extend_chunk(&mut self, chunk: &str) -> usize {
+        let mut added = 0;
         for line in chunk.split_inclusive('\n') {
             let trimmed = line.trim_end_matches('\n').to_string();
             self.push(trimmed);
+            added += 1;
         }
+        added
+    }
+
+    /// Absolute id of the oldest line still held (ids never repeat, even
+    /// after old lines are dropped).
+    pub fn first_id(&self) -> u64 {
+        self.dropped
+    }
+
+    pub fn entry_by_id(&self, id: u64) -> Option<&LogLine> {
+        let idx = id.checked_sub(self.dropped)?;
+        self.lines.get(usize::try_from(idx).ok()?)
     }
 
     pub fn len(&self) -> usize {
@@ -230,7 +245,7 @@ fn level_color(level: LogLevel) -> Color {
     }
 }
 
-fn message_style(level: LogLevel) -> Style {
+pub(super) fn message_style(level: LogLevel) -> Style {
     let mut s = Style::default();
     match level {
         LogLevel::Fatal => {
@@ -348,12 +363,32 @@ pub fn visible_range(total: usize, height: usize, scroll: usize, follow: bool) -
     (start, end)
 }
 
+/// Scrolled-away marker. While the logs are focused `f` opens the full-screen
+/// viewer, so End (not `f`) returns to live.
+pub(super) fn paused_marker(app: &App) -> &'static str {
+    if matches!(app.focus, FocusArea::Detail) && matches!(app.mode, crate::events::Mode::Normal) {
+        " [PAUSED — End to resume]"
+    } else {
+        " [PAUSED — f to resume]"
+    }
+}
+
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let height = area.height as usize;
     app.last_log_height = height.max(1);
     app.last_log_inner = area;
-    let buf = &app.logs;
-    if buf.is_empty() {
+    let view = crate::logview::LogView::new(&app.logs, app.insights.filtered.as_ref());
+    if view.is_empty() && !app.logs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "(no lines match the filter — Ctrl+f levels, / regex, Esc while typing clears)",
+                Style::default().dim(),
+            ))),
+            area,
+        );
+        return;
+    }
+    if view.is_empty() {
         let hint = match &app.log_stream {
             crate::app::LogStreamState::Idle => {
                 if app.selected_container_id().is_none() {
@@ -392,7 +427,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let total = buf.len();
+    let total = view.len();
     let (scroll, end) = visible_range(total, height, app.logs_scroll, app.logs_follow);
     if app.logs_follow {
         app.logs_scroll = scroll;
@@ -403,9 +438,20 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         None
     };
 
+    let insights = &app.insights;
+    let cursor = insights.log_cursor.filter(|_| {
+        matches!(app.focus, FocusArea::Detail)
+            && (insights.section == crate::insights_ui::Section::Logs
+                || matches!(insights.modal, Some(crate::insights_ui::Modal::Fullscreen)))
+    });
+    let opts = super::log_rows::RowOptions {
+        columns: &insights.columns,
+        search: insights.search.as_deref(),
+        h_scroll: insights.h_scroll,
+    };
     let mut lines: Vec<Line> = Vec::with_capacity(end - scroll);
     for idx in scroll..end {
-        let entry = match buf.entry(idx) {
+        let entry = match view.entry(idx) {
             Some(e) => e,
             None => continue,
         };
@@ -415,19 +461,31 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
                 idx >= lo && idx <= hi
             })
             .unwrap_or(false);
-        lines.push(style_entry(entry, selected));
+        let line = if selected || opts.is_plain() {
+            style_entry(entry, selected)
+        } else {
+            super::log_rows::render_row(entry, &opts)
+        };
+        let line = if cursor == Some(idx) {
+            line.patch_style(Style::default().add_modifier(Modifier::REVERSED))
+        } else {
+            line
+        };
+        lines.push(line);
     }
 
     let follow_marker = if app.logs_follow {
         ""
     } else {
-        " [PAUSED — f to resume]"
+        paused_marker(app)
+    };
+    let count = if total == app.logs.len() {
+        format!("{} lines", total)
+    } else {
+        format!("{} of {} lines", total, app.logs.len())
     };
     let header = Line::from(vec![
-        Span::styled(
-            format!("{} lines", total),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(count, Style::default().fg(Color::DarkGray)),
         Span::styled(follow_marker, Style::default().fg(Color::Yellow)),
     ]);
     if scroll == 0 {

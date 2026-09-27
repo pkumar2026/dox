@@ -4,6 +4,9 @@ mod config;
 mod docker;
 mod events;
 mod grouping;
+mod insights;
+mod insights_ui;
+mod logview;
 mod ui;
 
 use std::io;
