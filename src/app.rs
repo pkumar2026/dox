@@ -20,6 +20,7 @@ use tracing::{error, info, warn};
 use crate::clipboard::Clipboard;
 use crate::config::Config;
 use crate::docker::containers::{self, ContainerRow};
+use crate::docker::events::{self as docker_events, DockerSignal, Stale};
 use crate::docker::images::{self, ImageRow};
 use crate::docker::networks::{self, NetworkRow};
 use crate::docker::volumes::{self, VolumeRow};
@@ -29,6 +30,7 @@ use crate::grouping;
 use crate::grouping::{build_groups, flatten_selectable, Group};
 use crate::insights_ui::InsightsState;
 use crate::logview::LogView;
+use crate::refresh::{self, RefreshGate};
 use crate::ui::logs::{LogBuffer, Selection};
 
 mod insights_actions;
@@ -143,6 +145,7 @@ pub enum AppMsg {
     /// fetched this round (see `spawn_refresh`), not that it came back empty.
     Lists(Box<ListSnapshot>),
     Refresh,
+    Docker(DockerSignal),
 }
 
 /// One round of list data, fetched off the event loop.
@@ -245,11 +248,14 @@ pub struct App {
     /// Filtered row indices per panel, in `Panel::index()` order. Rebuilt only
     /// by `recompute_visible`; see `visible_containers` for why.
     visible: [Vec<usize>; 4],
-    /// Set while a background list refresh is in flight, so ticks don't pile up
-    /// overlapping requests against a slow daemon. Holds the start time rather
-    /// than a bool so a task that dies without replying cannot wedge refreshes
-    /// off for the rest of the session.
-    refresh_started: Option<Instant>,
+    /// One list refresh at a time; requests made meanwhile are queued.
+    refresh_gate: RefreshGate,
+    /// Docker's event stream is delivering, so lists refresh on events plus a
+    /// slow safety poll instead of polling every tick.
+    pub events_live: bool,
+    /// A refresh asked for by Docker events, waiting out `EVENT_DEBOUNCE`
+    /// (`true` when images/volumes/networks are stale too).
+    pub pending_event_refresh: Option<(bool, Instant)>,
 }
 
 impl App {
@@ -312,7 +318,9 @@ impl App {
             last_panel_inner: [Rect::default(); 4],
             insights: InsightsState::new(Instant::now()),
             visible: Default::default(),
-            refresh_started: None,
+            refresh_gate: RefreshGate::default(),
+            events_live: false,
+            pending_event_refresh: None,
         }
     }
 
@@ -635,7 +643,9 @@ impl App {
                 }
             },
             AppMsg::Lists(snap) => {
-                self.refresh_started = None;
+                if let Some(full) = self.refresh_gate.finished(Instant::now()) {
+                    self.start_refresh_task(full);
+                }
                 if snap.containers.is_none()
                     && snap.images.is_none()
                     && snap.volumes.is_none()
@@ -646,6 +656,25 @@ impl App {
                 self.apply_lists(*snap);
             }
             AppMsg::Refresh => self.spawn_refresh(true),
+            AppMsg::Docker(DockerSignal::Live(live)) => {
+                info!(live, "docker event stream");
+                self.events_live = live;
+            }
+            AppMsg::Docker(DockerSignal::Changed(stale)) => {
+                let full = stale == Stale::Everything;
+                let now = Instant::now();
+                self.pending_event_refresh = Some(match self.pending_event_refresh {
+                    Some((pending_full, since)) => (pending_full || full, since),
+                    None => (full, now),
+                });
+            }
+        }
+    }
+
+    /// Run the refresh Docker events asked for, once their burst has settled.
+    pub fn commit_event_refresh(&mut self) {
+        if let Some((full, _)) = self.pending_event_refresh.take() {
+            self.spawn_refresh(full);
         }
     }
 
@@ -657,15 +686,14 @@ impl App {
     /// action (which already posts `AppMsg::Refresh`), so the periodic tick
     /// asks for containers alone most of the time.
     pub fn spawn_refresh(&mut self, full: bool) {
-        // Re-arm if a previous refresh never replied (task panicked or was
-        // dropped); otherwise a single lost reply would freeze the lists.
-        if self
-            .refresh_started
-            .is_some_and(|t| t.elapsed() < REFRESH_STALE_AFTER)
-        {
-            return;
+        // One at a time; a request made meanwhile runs when this one replies
+        // (see `RefreshGate`), so no change is lost.
+        if let Some(full) = self.refresh_gate.request(full, Instant::now()) {
+            self.start_refresh_task(full);
         }
-        self.refresh_started = Some(Instant::now());
+    }
+
+    fn start_refresh_task(&mut self, full: bool) {
         let client = self.client.clone();
         let tx = self.msg_tx.clone();
         tokio::spawn(async move {
@@ -1458,9 +1486,6 @@ impl App {
     }
 }
 
-/// How long to wait before assuming an in-flight refresh will never reply.
-const REFRESH_STALE_AFTER: Duration = Duration::from_secs(10);
-
 pub fn clamp_split(p: i16) -> u16 {
     p.clamp(10, 70) as u16
 }
@@ -1604,6 +1629,11 @@ where
     let _ = app.refresh_all().await;
     let mut prev_panel = app.panel;
 
+    let events_tx = app.msg_tx.clone();
+    let docker_watch = docker_events::watch(app.client.raw().clone(), move |signal| {
+        let _ = events_tx.send(AppMsg::Docker(signal));
+    });
+
     let mut events = EventStream::new();
     let mut tick = time::interval(Duration::from_millis(cfg.refresh_ms));
     tick.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -1614,9 +1644,8 @@ where
     let mut last_draw = Instant::now() - FRAME_BUDGET;
     let mut dirty = true;
 
-    // Containers change on their own; images/volumes/networks change only on
-    // user action, which posts AppMsg::Refresh. Poll the latter every Nth tick.
-    const FULL_REFRESH_EVERY: u64 = 5;
+    // With Docker events live, lists refresh on events plus a slow safety
+    // poll; otherwise every tick, as before (see `refresh::on_tick`).
     let mut ticks: u64 = 0;
 
     loop {
@@ -1644,6 +1673,10 @@ where
         // How much longer until a pending log-follow debounce should fire.
         // Only consulted while something is actually pending (see the select
         // arm's guard), so the fallback value here is never used.
+        let event_refresh_wait = app
+            .pending_event_refresh
+            .map(|(_, since)| refresh::EVENT_DEBOUNCE.saturating_sub(since.elapsed()))
+            .unwrap_or_default();
         let log_follow_wait = app
             .pending_log_follow
             .as_ref()
@@ -1664,14 +1697,20 @@ where
                     }
                     if prev_panel != app.panel {
                         prev_panel = app.panel;
-                        app.spawn_refresh(true);
+                        // Events keep every list current; only poll-mode
+                        // needs a fresh fetch on a panel switch.
+                        if !app.events_live {
+                            app.spawn_refresh(true);
+                        }
                     }
                     dirty = true;
                 }
             }
             _ = tick.tick(), if !app.mode_is_confirm() && !app.mode_is_help() => {
                 ticks = ticks.wrapping_add(1);
-                app.spawn_refresh(ticks.is_multiple_of(FULL_REFRESH_EVERY));
+                if let Some(full) = refresh::on_tick(ticks, app.events_live) {
+                    app.spawn_refresh(full);
+                }
                 dirty = true;
             }
             Some(msg) = msg_rx.recv() => {
@@ -1689,6 +1728,9 @@ where
             _ = tokio::time::sleep(until_next_frame), if dirty => {
                 // Wake up to render the pending dirty frame.
             }
+            _ = tokio::time::sleep(event_refresh_wait), if app.pending_event_refresh.is_some() => {
+                app.commit_event_refresh();
+            }
             _ = tokio::time::sleep(log_follow_wait), if app.pending_log_follow.is_some() => {
                 app.commit_log_follow();
                 dirty = true;
@@ -1696,6 +1738,7 @@ where
         }
     }
 
+    docker_watch.abort();
     if let Some(h) = app.log_task.take() {
         h.abort();
     }

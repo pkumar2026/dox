@@ -721,7 +721,10 @@ mod tests {
         assert_eq!(line.ts_len, 20);
         let mut b = LogBuffer::new(2);
         b.push(line.raw.clone());
-        assert_eq!(b.entry(0).map(|l| (l.level, l.ts_len)), Some((line.level, line.ts_len)));
+        assert_eq!(
+            b.entry(0).map(|l| (l.level, l.ts_len)),
+            Some((line.level, line.ts_len))
+        );
     }
 
     #[test]

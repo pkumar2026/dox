@@ -5,6 +5,7 @@ use bollard::{Docker, API_DEFAULT_VERSION};
 use serde::Deserialize;
 
 pub mod containers;
+pub mod events;
 pub mod images;
 pub mod networks;
 pub mod volumes;

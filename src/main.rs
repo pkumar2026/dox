@@ -7,6 +7,7 @@ mod grouping;
 mod insights;
 mod insights_ui;
 mod logview;
+mod refresh;
 mod ui;
 
 use std::io;
