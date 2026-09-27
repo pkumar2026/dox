@@ -225,11 +225,15 @@ impl InsightsState {
         true
     }
 
-    /// Count a chunk of new log lines and keep the filtered view current.
-    /// `added` is how many lines `buf` just gained from this chunk.
-    pub fn on_log_chunk(&mut self, chunk: &str, buf: &LogBuffer, added: usize, now: Instant) {
-        for line in chunk.lines() {
-            self.engine.observe(line, now);
+    /// Count the lines `buf` just gained (`added`) and keep the filtered view
+    /// current. Reads the buffer's entries so each line's level and timestamp
+    /// are detected once, not again here.
+    pub fn on_new_lines(&mut self, buf: &LogBuffer, added: usize, now: Instant) {
+        let len = buf.len();
+        for i in len - added.min(len)..len {
+            if let Some(entry) = buf.entry(i) {
+                self.engine.observe(entry, now);
+            }
         }
         if let Some(ids) = self.filtered.as_mut() {
             ids.update(buf, &self.filter, added);
@@ -266,6 +270,7 @@ impl InsightsState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::logs::LogLine;
 
     #[test]
     fn sections_cycle_both_ways() {
@@ -293,14 +298,16 @@ mod tests {
     fn refresh_waits_for_the_interval_and_respects_pause() {
         let t0 = Instant::now();
         let mut s = InsightsState::new(t0);
-        s.engine.observe("ERROR boom", t0);
+        s.engine
+            .observe(&LogLine::from_raw("ERROR boom".into()), t0);
         assert!(!s.refresh_if_due(t0 + Duration::from_millis(200)));
         assert_eq!(s.snapshot.total_lines, 0);
         assert!(s.refresh_if_due(t0 + Duration::from_secs(1)));
         assert_eq!(s.snapshot.total_lines, 1);
 
         s.paused = true;
-        s.engine.observe("ERROR again", t0);
+        s.engine
+            .observe(&LogLine::from_raw("ERROR again".into()), t0);
         assert!(!s.refresh_if_due(t0 + Duration::from_secs(5)));
         assert_eq!(s.snapshot.total_lines, 1, "paused view stays frozen");
         s.paused = false;
@@ -315,9 +322,8 @@ mod tests {
         let mut buf = LogBuffer::new(100);
         s.filter.hidden[crate::insights::severity::Severity::Info.index()] = true;
         s.refilter(&buf);
-        let chunk = "INFO a\nERROR b\n";
-        let added = buf.extend_chunk(chunk);
-        s.on_log_chunk(chunk, &buf, added, t0);
+        let added = buf.extend_chunk("INFO a\nERROR b\n");
+        s.on_new_lines(&buf, added, t0);
         s.refresh_now(t0);
         assert_eq!(s.snapshot.total_lines, 2);
         let view = crate::logview::LogView::new(&buf, s.filtered.as_ref());
@@ -337,8 +343,8 @@ mod tests {
     fn each_refresh_adds_one_counts_bar() {
         let t0 = Instant::now();
         let mut s = InsightsState::new(t0);
-        s.engine.observe("ERROR a", t0);
-        s.engine.observe("INFO b", t0);
+        s.engine.observe(&LogLine::from_raw("ERROR a".into()), t0);
+        s.engine.observe(&LogLine::from_raw("INFO b".into()), t0);
         assert!(s.refresh_if_due(t0 + Duration::from_secs(1)));
         assert!(s.refresh_if_due(t0 + Duration::from_secs(2)));
         assert_eq!(s.counts_history.len(), 2);

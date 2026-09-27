@@ -17,6 +17,15 @@ pub struct LogLine {
     pub ts_len: usize,
 }
 
+impl LogLine {
+    /// Detect the level and timestamp once; everything downstream reuses them.
+    pub fn from_raw(raw: String) -> Self {
+        let level = detect_level(&raw);
+        let ts_len = timestamp_prefix_len(&raw);
+        Self { raw, level, ts_len }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LogBuffer {
     lines: VecDeque<LogLine>,
@@ -39,13 +48,7 @@ impl LogBuffer {
             self.lines.pop_front();
             self.dropped += 1;
         }
-        let level = detect_level(&raw);
-        let ts_len = timestamp_prefix_len(&raw);
-        self.lines.push_back(LogLine {
-            raw,
-            level,
-            ts_len,
-        });
+        self.lines.push_back(LogLine::from_raw(raw));
     }
 
     /// Append a chunk's lines; returns how many lines were added.
@@ -709,6 +712,16 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn from_raw_matches_push() {
+        let line = LogLine::from_raw("2026-06-06T19:02:11Z ERROR boom".to_string());
+        assert_eq!(line.level, LogLevel::Error);
+        assert_eq!(line.ts_len, 20);
+        let mut b = LogBuffer::new(2);
+        b.push(line.raw.clone());
+        assert_eq!(b.entry(0).map(|l| (l.level, l.ts_len)), Some((line.level, line.ts_len)));
     }
 
     #[test]

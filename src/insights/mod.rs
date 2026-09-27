@@ -13,9 +13,10 @@ pub mod words;
 
 use std::time::Instant;
 
+use crate::ui::logs::LogLine;
 use attributes::{AttributeSummary, AttributeTable};
 use frequency::FrequencyTable;
-use parse::parse_line;
+use parse::parse_entry;
 use patterns::{PatternInfo, PatternMiner};
 use severity::Severity;
 use stats::Stats;
@@ -102,11 +103,11 @@ impl Insights {
         *self = Self::new(now);
     }
 
-    /// Count one raw log line that arrived at `now`.
-    pub fn observe(&mut self, raw: &str, now: Instant) {
-        let line = parse_line(raw);
+    /// Count one log line that arrived at `now`.
+    pub fn observe(&mut self, entry: &LogLine, now: Instant) {
+        let line = parse_entry(&entry.raw, entry.ts_len, entry.level);
         let second = now.saturating_duration_since(self.started).as_secs();
-        self.stats.add(second, raw.len());
+        self.stats.add(second, entry.raw.len());
         for word in words::extract_words(&line.message) {
             self.words.add(&word);
         }
@@ -176,7 +177,7 @@ mod tests {
         let now = Instant::now();
         let mut i = Insights::new(now);
         for l in LINES {
-            i.observe(l, now);
+            i.observe(&LogLine::from_raw(l.to_string()), now);
         }
         (i, now)
     }

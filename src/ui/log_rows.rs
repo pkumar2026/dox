@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 
 use super::insights_panel::{fit, severity_color};
 use super::logs::{message_style, LogLine};
-use crate::insights::parse::parse_line;
+use crate::insights::parse::parse_entry;
 use crate::insights::severity::Severity;
 use crate::insights_ui::picker::Columns;
 
@@ -48,7 +48,7 @@ pub fn render_row(entry: &LogLine, opts: &RowOptions) -> Line<'static> {
         ));
     }
     if cols.service || cols.host || !cols.fields.is_empty() {
-        let parsed = parse_line(raw);
+        let parsed = parse_entry(raw, entry.ts_len, entry.level);
         let mut push_col = |value: Option<&str>, width: usize| {
             let text = fit(value.unwrap_or("-"), width);
             spans.push(Span::styled(

@@ -574,7 +574,7 @@ impl App {
             AppMsg::LogChunk(chunk) => {
                 let added = self.logs.extend_chunk(&chunk);
                 self.insights
-                    .on_log_chunk(&chunk, &self.logs, added, Instant::now());
+                    .on_new_lines(&self.logs, added, Instant::now());
                 if self.logs_follow {
                     self.logs_scroll = self.log_view().len();
                 }

@@ -4,7 +4,7 @@
 use serde_json::{Map, Value};
 
 use super::severity::Severity;
-use crate::ui::logs::timestamp_prefix_len;
+use crate::ui::logs::{detect_level, timestamp_prefix_len, LogLevel};
 
 const LEVEL_KEYS: &[&str] = &[
     "level",
@@ -33,17 +33,21 @@ pub struct ParsedLine {
     pub host: Option<String>,
 }
 
-/// Parse a line as dox stores it (Docker's timestamp prefix included).
+/// Parse a line as dox stores it (Docker's timestamp prefix included),
+/// detecting its level and timestamp. Streaming code uses `parse_entry`.
 pub fn parse_line(raw: &str) -> ParsedLine {
-    let body = strip_timestamp(raw).trim();
-    parse_json(body).unwrap_or_else(|| parse_text(body))
+    parse_entry(raw, timestamp_prefix_len(raw), detect_level(raw))
 }
 
-fn strip_timestamp(s: &str) -> &str {
-    s[timestamp_prefix_len(s)..].trim_start()
+/// Parse a line whose timestamp length and level the log buffer already
+/// worked out, so neither is scanned for again. A JSON level field wins.
+pub fn parse_entry(raw: &str, ts_len: usize, level: LogLevel) -> ParsedLine {
+    let body = raw.get(ts_len..).unwrap_or(raw).trim();
+    let severity = Severity::from_level(level);
+    parse_json(body, severity).unwrap_or_else(|| parse_text(body, severity))
 }
 
-fn parse_json(body: &str) -> Option<ParsedLine> {
+fn parse_json(body: &str, detected: Severity) -> Option<ParsedLine> {
     if !body.starts_with('{') {
         return None;
     }
@@ -57,10 +61,9 @@ fn parse_json(body: &str) -> Option<ParsedLine> {
         .and_then(|k| lookup(&fields, k))
         .unwrap_or(body)
         .to_string();
-    let severity = match level_key.and_then(|k| lookup(&fields, k)) {
-        Some(level) => Severity::normalize(level),
-        None => Severity::detect(&message),
-    };
+    let severity = level_key
+        .and_then(|k| lookup(&fields, k))
+        .map_or(detected, Severity::normalize);
     let attributes: Vec<(String, String)> = fields
         .iter()
         .filter(|(k, _)| Some(k.as_str()) != level_key && Some(k.as_str()) != message_key)
@@ -69,10 +72,10 @@ fn parse_json(body: &str) -> Option<ParsedLine> {
     Some(with_origin(message, severity, attributes))
 }
 
-fn parse_text(body: &str) -> ParsedLine {
+fn parse_text(body: &str, severity: Severity) -> ParsedLine {
     with_origin(
         strip_prefix_noise(body).to_string(),
-        Severity::detect(body),
+        severity,
         extract_fields(body),
     )
 }
@@ -237,12 +240,42 @@ fn is_level_word(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::logs::LogLevel;
 
     fn attr<'a>(p: &'a ParsedLine, key: &str) -> Option<&'a str> {
         p.attributes
             .iter()
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn parse_entry_trusts_the_known_level() {
+        // The log buffer already detected the level; it is not detected again.
+        let p = parse_entry(
+            "2026-09-26T10:00:00Z INFO but really fine",
+            20,
+            LogLevel::Error,
+        );
+        assert_eq!(p.severity, Severity::Error);
+        assert_eq!(p.message, "but really fine");
+    }
+
+    #[test]
+    fn a_json_level_field_still_wins() {
+        let raw = r#"2026-09-26T10:00:00Z {"level":"warn","msg":"m"}"#;
+        assert_eq!(
+            parse_entry(raw, 20, LogLevel::Info).severity,
+            Severity::Warn
+        );
+    }
+
+    #[test]
+    fn unknown_level_counts_as_info() {
+        assert_eq!(
+            parse_entry("hello", 0, LogLevel::Other).severity,
+            Severity::Info
+        );
     }
 
     #[test]

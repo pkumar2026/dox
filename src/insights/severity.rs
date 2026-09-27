@@ -1,6 +1,6 @@
 //! Log severity as Gonzo reports it: six levels, unknown lines count as INFO.
 
-use crate::ui::logs::{detect_level, LogLevel};
+use crate::ui::logs::LogLevel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Severity {
@@ -36,11 +36,6 @@ impl Severity {
             Severity::Debug => "DEBUG",
             Severity::Trace => "TRACE",
         }
-    }
-
-    /// Severity of a plain-text line, using dox's own level detection.
-    pub fn detect(text: &str) -> Self {
-        Self::from_level(detect_level(text))
     }
 
     /// dox's detected level as a severity; lines without one count as INFO.
@@ -82,6 +77,11 @@ impl Severity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::logs::detect_level;
+
+    fn detect(text: &str) -> Severity {
+        Severity::from_level(detect_level(text))
+    }
 
     #[test]
     fn index_follows_all_order() {
@@ -107,18 +107,15 @@ mod tests {
     fn unknown_values_count_as_info() {
         assert_eq!(Severity::normalize("verbose"), Severity::Info);
         assert_eq!(Severity::normalize(""), Severity::Info);
-        assert_eq!(Severity::detect("just some text"), Severity::Info);
+        assert_eq!(detect("just some text"), Severity::Info);
     }
 
     #[test]
     fn detect_uses_the_level_word_in_the_line() {
         assert_eq!(
-            Severity::detect("2026-01-01 12:00:00 [error    ] boom"),
+            detect("2026-01-01 12:00:00 [error    ] boom"),
             Severity::Error
         );
-        assert_eq!(
-            Severity::detect("LOG:  FATAL:  terminating"),
-            Severity::Fatal
-        );
+        assert_eq!(detect("LOG:  FATAL:  terminating"), Severity::Fatal);
     }
 }
