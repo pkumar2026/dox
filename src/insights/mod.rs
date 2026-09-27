@@ -70,7 +70,6 @@ pub struct Insights {
     words: FrequencyTable,
     attributes: AttributeTable,
     patterns: PatternMiner,
-    patterns_by_severity: Vec<PatternMiner>,
     services: FrequencyTable,
     hosts: FrequencyTable,
     timeline: Timeline,
@@ -89,7 +88,6 @@ impl Insights {
             words: FrequencyTable::new(MEMORY_SIZE),
             attributes: AttributeTable::new(MEMORY_SIZE, MAX_VALUES_PER_KEY),
             patterns: PatternMiner::new(),
-            patterns_by_severity: Severity::ALL.iter().map(|_| PatternMiner::new()).collect(),
             services: FrequencyTable::new(MEMORY_SIZE),
             hosts: FrequencyTable::new(MEMORY_SIZE),
             timeline: Timeline::new(),
@@ -119,8 +117,7 @@ impl Insights {
         self.stats.add(second, entry.raw.len());
         words::for_each_word(&line.message, |word| self.words.add(word));
         self.attributes.add(&line.attributes);
-        self.patterns.add(&line.message);
-        self.patterns_by_severity[line.severity.index()].add(&line.message);
+        self.patterns.add(&line.message, line.severity);
         if let Some(service) = &line.service {
             self.services.add(service);
         }
@@ -156,7 +153,7 @@ impl Insights {
             snap.by_severity = Severity::ALL
                 .iter()
                 .map(|s| SeverityBreakdown {
-                    patterns: self.patterns_by_severity[s.index()].top(PER_SEVERITY_TOP),
+                    patterns: self.patterns.top_for(*s, PER_SEVERITY_TOP),
                     services: self.timeline.top_services(*s, PER_SEVERITY_TOP),
                 })
                 .collect();

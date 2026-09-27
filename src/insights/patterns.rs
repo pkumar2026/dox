@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 use drain3::{Config, Matcher, Template};
 
+use super::severity::Severity;
+
 const MAX_PATTERNS: usize = 100;
 /// Lines are cut to this many tokens / bytes before matching; `drain3`
 /// rejects longer ones outright.
@@ -27,6 +29,8 @@ struct Cluster {
     text: String,
     count: u64,
     shape: (usize, usize),
+    /// Lines of each severity in this pattern (for the per-severity top 3).
+    by_severity: [u64; 6],
 }
 
 pub struct PatternMiner {
@@ -56,7 +60,7 @@ impl PatternMiner {
         }
     }
 
-    pub fn add(&mut self, message: &str) {
+    pub fn add(&mut self, message: &str, severity: Severity) {
         let line = clamp(message);
         if line.is_empty() {
             return;
@@ -69,6 +73,7 @@ impl PatternMiner {
         let shape = (template.token_count(), template.tokens().len());
         if let Some(cluster) = self.clusters.get_mut(&template.id()) {
             cluster.count = count;
+            cluster.by_severity[severity.index()] += 1;
             if cluster.shape != shape {
                 cluster.text = render(&template);
                 cluster.shape = shape;
@@ -82,8 +87,15 @@ impl PatternMiner {
             return;
         }
         let text = render(&template);
-        self.clusters
-            .insert(template.id(), Cluster { text, count, shape });
+        let mut by_severity = [0; 6];
+        by_severity[severity.index()] = 1;
+        let cluster = Cluster {
+            text,
+            count,
+            shape,
+            by_severity,
+        };
+        self.clusters.insert(template.id(), cluster);
     }
 
     /// Number of distinct patterns.
@@ -111,6 +123,33 @@ impl PatternMiner {
                 template: c.text.clone(),
                 count: c.count,
                 percent: c.count as f64 * 100.0 / total,
+            })
+            .collect();
+        all.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.template.cmp(&b.template))
+        });
+        all.truncate(n);
+        all
+    }
+}
+
+impl PatternMiner {
+    /// Top `n` patterns among lines of one severity; percent of that
+    /// severity's matched lines. One matcher serves every severity, so each
+    /// line is clustered once.
+    pub fn top_for(&self, severity: Severity, n: usize) -> Vec<PatternInfo> {
+        let i = severity.index();
+        let total: u64 = self.clusters.values().map(|c| c.by_severity[i]).sum();
+        let mut all: Vec<PatternInfo> = self
+            .clusters
+            .values()
+            .filter(|c| c.by_severity[i] > 0)
+            .map(|c| PatternInfo {
+                template: c.text.clone(),
+                count: c.by_severity[i],
+                percent: c.by_severity[i] as f64 * 100.0 / total.max(1) as f64,
             })
             .collect();
         all.sort_by(|a, b| {
@@ -176,12 +215,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn top_patterns_per_severity_come_from_one_matcher() {
+        let mut m = PatternMiner::new();
+        m.add("request 1 failed hard", Severity::Error);
+        m.add("request 2 failed hard", Severity::Error);
+        m.add("request 3 failed hard", Severity::Info);
+        m.add("disk almost full now", Severity::Warn);
+        let errors = m.top_for(Severity::Error, 3);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].count, 2);
+        assert!((errors[0].percent - 100.0).abs() < 0.01);
+        assert_eq!(m.top_for(Severity::Warn, 3)[0].count, 1);
+        assert!(m.top_for(Severity::Debug, 3).is_empty());
+        assert_eq!(m.top(1)[0].count, 3, "overall count spans severities");
+    }
+
+    #[test]
     fn similar_lines_share_a_pattern() {
         let mut m = PatternMiner::new();
-        m.add("user 17 logged in from 10.0.0.1");
-        m.add("user 42 logged in from 10.0.0.9");
-        m.add("user 99 logged in from 10.0.0.3");
-        m.add("disk full on /dev/sda1");
+        m.add("user 17 logged in from 10.0.0.1", Severity::Info);
+        m.add("user 42 logged in from 10.0.0.9", Severity::Info);
+        m.add("user 99 logged in from 10.0.0.3", Severity::Info);
+        m.add("disk full on /dev/sda1", Severity::Info);
         let top = m.top(10);
         assert_eq!(top.len(), 2, "{top:?}");
         assert_eq!(top[0].count, 3);
@@ -199,7 +254,7 @@ mod tests {
     fn counts_stream_in_one_line_at_a_time() {
         let mut m = PatternMiner::new();
         for i in 0..10 {
-            m.add(&format!("request {i} finished ok"));
+            m.add(&format!("request {i} finished ok"), Severity::Info);
         }
         assert_eq!(m.top(1)[0].count, 10);
         assert_eq!(m.len(), 1);
@@ -212,15 +267,15 @@ mod tests {
             .map(|i| format!("tok{i}"))
             .collect::<Vec<_>>()
             .join(" ");
-        m.add(&long);
-        m.add(&"x".repeat(10_000));
+        m.add(&long, Severity::Info);
+        m.add(&"x".repeat(10_000), Severity::Info);
         assert_eq!(m.total(), 2);
     }
 
     #[test]
     fn blank_messages_are_ignored() {
         let mut m = PatternMiner::new();
-        m.add("   ");
+        m.add("   ", Severity::Info);
         assert_eq!(m.total(), 0);
     }
 
@@ -229,7 +284,7 @@ mod tests {
         let mut m = PatternMiner::new();
         for i in 0..150 {
             // Distinct token counts force distinct patterns.
-            m.add(&vec!["word"; i + 1].join(" "));
+            m.add(&vec!["word"; i + 1].join(" "), Severity::Info);
         }
         assert!(m.len() <= 100);
         assert_eq!(m.total() + m.overflow(), 150);
@@ -239,7 +294,7 @@ mod tests {
     #[test]
     fn long_templates_are_shortened_for_display() {
         let mut m = PatternMiner::new();
-        m.add(&"abcdefghij ".repeat(20));
+        m.add(&"abcdefghij ".repeat(20), Severity::Info);
         assert!(m.top(1)[0].template.chars().count() <= 100);
     }
 }
