@@ -254,6 +254,8 @@ pub struct App {
 
     /// Live CPU / memory / network / disk numbers per running container.
     pub stats: StatsStreams,
+    /// Container the stats popup (`o`) shows, as `(id, name)`.
+    pub stats_target: Option<(String, String)>,
 
     /// Filtered row indices per panel, in `Panel::index()` order. Rebuilt only
     /// by `recompute_visible`; see `visible_containers` for why.
@@ -328,6 +330,7 @@ impl App {
             last_panel_inner: [Rect::default(); 4],
             insights: InsightsState::new(Instant::now()),
             stats: StatsStreams::default(),
+            stats_target: None,
             visible: Default::default(),
             refresh_gate: RefreshGate::default(),
             events_live: false,
@@ -354,6 +357,9 @@ impl App {
     }
     pub fn mode_is_help(&self) -> bool {
         matches!(self.mode, Mode::Help)
+    }
+    pub fn mode_is_stats(&self) -> bool {
+        matches!(self.mode, Mode::Stats)
     }
 
     pub fn confirm_prompt(&self) -> Option<&str> {
@@ -748,6 +754,16 @@ impl App {
                 });
             })
         });
+    }
+
+    fn open_stats_popup(&mut self) {
+        if self.panel != Panel::Containers {
+            return;
+        }
+        if let Some(c) = self.selected_container() {
+            self.stats_target = Some((c.id, c.name));
+            self.mode = Mode::Stats;
+        }
     }
 
     /// Blocking refresh used once at startup so the first frame has data.
@@ -1246,6 +1262,7 @@ impl App {
                 self.refilter();
             }
             Action::ShowHelp => self.mode = Mode::Help,
+            Action::ShowStats => self.open_stats_popup(),
             Action::ToggleMouseCapture => self.toggle_mouse_capture(),
             Action::GrowPanels => self.adjust_split(5),
             Action::ShrinkPanels => self.adjust_split(-5),
@@ -1263,6 +1280,7 @@ impl App {
             Action::Confirm => self.run_confirmed(),
             Action::Cancel => {
                 self.pending = None;
+                self.stats_target = None;
                 self.mode = Mode::Normal;
             }
         }

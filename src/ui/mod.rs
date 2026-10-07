@@ -9,6 +9,7 @@ pub mod log_rows;
 pub mod logs;
 pub mod panels;
 pub mod stats_columns;
+pub mod stats_popup;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 #[allow(unused_imports)]
@@ -43,6 +44,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.mode_is_help() {
         help::draw(frame, area);
+    }
+    if app.mode_is_stats() {
+        stats_popup::draw(frame, area, app);
     }
     if let Some(toast) = app.toast_text() {
         draw_toast(frame, area, toast);
@@ -308,7 +312,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     {
         " Tab: section  ↑↓: move  Enter: open  /: filter  s: search  Ctrl+f: levels  f: fullscreen  C: columns  i: stats  u/U: refresh  Space: pause  r: reset  y: copy  Esc: back ".into()
     } else {
-        " Tab/←→/1-4: panel  ↑↓: nav  Enter: view logs  Esc: back  x/s/r: stop/start/restart  d: delete  D: prune  f: follow  v: select  y: copy  /: filter  ?: help  q: quit ".into()
+        " Tab/←→/1-4: panel  ↑↓: nav  Enter: view logs  o: graphs  Esc: back  x/s/r: stop/start/restart  d: delete  D: prune  f: follow  v: select  y: copy  /: filter  ?: help  q: quit ".into()
     };
     frame.render_widget(Line::from(Span::styled(txt, Style::default().dim())), area);
 }

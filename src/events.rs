@@ -39,6 +39,8 @@ pub enum Action {
     CommitFilter,
     CancelFilter,
     ShowHelp,
+    /// Open the CPU / memory graphs for the selected container.
+    ShowStats,
     ToggleMouseCapture,
     RestartLogStream,
     GrowPanels,
@@ -55,6 +57,7 @@ pub enum Mode {
     Visual,
     Confirm,
     Help,
+    Stats,
 }
 
 pub fn map(key: KeyEvent, mode: Mode) -> Option<Action> {
@@ -84,6 +87,10 @@ pub fn map(key: KeyEvent, mode: Mode) -> Option<Action> {
         },
         Mode::Help => match key.code {
             Esc | Char('?') | Char('q') => Some(Action::Cancel),
+            _ => None,
+        },
+        Mode::Stats => match key.code {
+            Esc | Char('o') | Char('q') => Some(Action::Cancel),
             _ => None,
         },
         Mode::Visual => match key.code {
@@ -126,6 +133,7 @@ pub fn map(key: KeyEvent, mode: Mode) -> Option<Action> {
             Char('y') => Some(Action::YankSelection),
             Char('/') => Some(Action::BeginFilter),
             Char('?') => Some(Action::ShowHelp),
+            Char('o') => Some(Action::ShowStats),
             Char('m') => Some(Action::ToggleMouseCapture),
             Char('R') => Some(Action::RestartLogStream),
             Char('+') => Some(Action::GrowPanels),
@@ -295,6 +303,22 @@ mod tests {
         assert_eq!(
             map(k(KeyCode::Esc), Mode::Visual),
             Some(Action::UnfocusDetail)
+        );
+    }
+
+    #[test]
+    fn o_opens_the_stats_popup_and_esc_o_q_close_it() {
+        assert_eq!(
+            map(k(KeyCode::Char('o')), Mode::Normal),
+            Some(Action::ShowStats)
+        );
+        for code in [KeyCode::Esc, KeyCode::Char('o'), KeyCode::Char('q')] {
+            assert_eq!(map(k(code), Mode::Stats), Some(Action::Cancel));
+        }
+        assert_eq!(map(k(KeyCode::Char('x')), Mode::Stats), None);
+        assert_eq!(
+            map(k_ctrl(KeyCode::Char('c')), Mode::Stats),
+            Some(Action::Quit)
         );
     }
 

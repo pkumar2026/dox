@@ -39,18 +39,22 @@ pane title, in case it doesn't fit the column.
 
 Running containers show live CPU, MEM, NET I/O, BLOCK I/O and PIDS columns —
 the numbers `docker stats` (and [ctop](https://github.com/bcicen/ctop)) show.
-dox keeps one stats stream open per running container and closes it when the
+CPU and MEM are bars, green / yellow / red by load (CPU: 100% is one core;
+MEM: share of the container's limit, or of the VM when it has none). dox
+keeps one stats stream open per running container and closes it when the
 container stops. MEM leaves out reclaimable page cache, as `docker stats` does.
 The columns appear only when the Containers panel has room, and drop off from
-the right (PIDS first) as it narrows.
+the right (PIDS first) as it narrows. Press `o` on a container for ctop's
+single view: CPU and memory gauges plus graphs of CPU, memory, network and
+disk over the last two minutes.
 
 The log pane follows whatever's highlighted, debounced by ~200ms — scan
 quickly down a long list and only the container you actually stop on ever
 opens a stream, not every row you passed through. `Enter` / `l` switch
 immediately if you don't want to wait out the debounce.
 
-And it deliberately does less. No exec-into-container shell, no CPU/memory
-graphs — see [What's out of scope](#whats-out-of-scope-intentional). If you
+And it deliberately does less. No exec-into-container shell, no image
+builds — see [What's out of scope](#whats-out-of-scope-intentional). If you
 just need to see what's running, stop or delete it, and read its logs, that's
 the whole tool: no feature surface to dig through.
 
@@ -112,6 +116,7 @@ By default `dox` looks for a daemon in this order:
 | `↑` `↓`              | move selection                                                            |
 | `g` / `G`            | jump to top / bottom                                                      |
 | `Enter`              | focus the detail (logs) pane                                              |
+| `o`                  | CPU / memory / network / disk graphs for the selected container           |
 | `Esc`                | back to list / dismiss modal                                              |
 | `x` / `s` / `r`      | stop / start / restart container                                          |
 | `d`                  | delete selected (with confirm)                                            |
@@ -195,6 +200,5 @@ cargo test -- --ignored
 
 ## What's out of scope (intentional)
 
-- Container CPU / memory graphs
 - `docker exec` shell-into-container
 - Image build / pull / tag (you have `docker build` for that)

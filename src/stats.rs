@@ -1,17 +1,21 @@
-//! One stats stream per running container, and the latest numbers each sent.
-//! Streams start and stop as the container list changes; a stopped
-//! container's numbers go away with its stream.
+//! One stats stream per running container, and the last couple of minutes of
+//! samples from each. Streams start and stop as the container list changes; a
+//! stopped container's samples go away with its stream.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use tokio::task::JoinHandle;
 
 use crate::docker::stats::ContainerStats;
 
+/// Samples kept per container for the `o` graphs. Streams send about one a
+/// second, so this is roughly the last two minutes.
+pub const HISTORY_LEN: usize = 120;
+
 #[derive(Debug, Default)]
 pub struct StatsStreams {
     tasks: HashMap<String, JoinHandle<()>>,
-    latest: HashMap<String, ContainerStats>,
+    history: HashMap<String, VecDeque<ContainerStats>>,
 }
 
 impl StatsStreams {
@@ -29,7 +33,7 @@ impl StatsStreams {
             }
             keep
         });
-        self.latest.retain(|id, _| running.contains(id));
+        self.history.retain(|id, _| running.contains(id));
         for id in running {
             self.tasks.entry(id.clone()).or_insert_with(|| start(id));
         }
@@ -38,20 +42,31 @@ impl StatsStreams {
     /// A sample arrived. Dropped once its stream was stopped, so a message
     /// still in flight can't bring back a stopped container's numbers.
     pub fn record(&mut self, id: String, stats: ContainerStats) {
-        if self.tasks.contains_key(&id) {
-            self.latest.insert(id, stats);
+        if !self.tasks.contains_key(&id) {
+            return;
         }
+        let samples = self.history.entry(id).or_default();
+        if samples.len() == HISTORY_LEN {
+            samples.pop_front();
+        }
+        samples.push_back(stats);
     }
 
+    /// The newest sample.
     pub fn get(&self, id: &str) -> Option<&ContainerStats> {
-        self.latest.get(id)
+        self.history.get(id)?.back()
+    }
+
+    /// Oldest first, at most `HISTORY_LEN`.
+    pub fn history(&self, id: &str) -> Option<&VecDeque<ContainerStats>> {
+        self.history.get(id)
     }
 
     pub fn stop_all(&mut self) {
         for (_, task) in self.tasks.drain() {
             task.abort();
         }
-        self.latest.clear();
+        self.history.clear();
     }
 }
 
@@ -124,6 +139,24 @@ mod tests {
         streams.sync(&ids(&[]), |id| pending_task(&mut started, id));
         streams.record("a".into(), sample(1));
         assert_eq!(streams.get("a"), None);
+    }
+
+    #[tokio::test]
+    async fn keeps_the_last_two_minutes_of_samples() {
+        let mut streams = StatsStreams::default();
+        let mut started = Vec::new();
+        streams.sync(&ids(&["a"]), |id| pending_task(&mut started, id));
+        for n in 0..(HISTORY_LEN as u64 + 5) {
+            streams.record("a".into(), sample(n));
+        }
+        let history = streams.history("a").expect("a has samples");
+        assert_eq!(history.len(), HISTORY_LEN);
+        assert_eq!(history.front().map(|s| s.mem_used), Some(5));
+        assert_eq!(
+            streams.get("a").map(|s| s.mem_used),
+            Some(HISTORY_LEN as u64 + 4),
+            "get returns the newest sample"
+        );
     }
 
     #[tokio::test]

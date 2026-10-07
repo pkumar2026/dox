@@ -1,6 +1,6 @@
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Row, Table};
+use ratatui::widgets::{Cell, Row, Table};
 use ratatui::Frame;
 
 use crate::app::{App, Panel};
@@ -145,8 +145,11 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
                 let stat_cells = stat_cols
                     .iter()
                     .map(|col| stats.map(|s| col.cell(s)).unwrap_or_default());
-                let cells: Vec<String> =
-                    [name, state, ports].into_iter().chain(stat_cells).collect();
+                let cells: Vec<Cell> = [name, state, ports]
+                    .into_iter()
+                    .map(Cell::from)
+                    .chain(stat_cells.map(Cell::from))
+                    .collect();
                 rows.push(Row::new(cells).style(style));
             }
         }

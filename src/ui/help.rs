@@ -11,6 +11,7 @@ const ENTRIES: &[(&str, &str)] = &[
     ("↑ ↓", "move selection"),
     ("g / G", "jump top / bottom"),
     ("Enter", "focus detail (logs)"),
+    ("o", "CPU / memory graphs for the selected container"),
     ("Esc", "back one level (logs / selection / filter)"),
     ("x / s / r", "stop / start / restart container"),
     ("d", "delete selected"),
@@ -69,7 +70,7 @@ pub fn draw(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+pub fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

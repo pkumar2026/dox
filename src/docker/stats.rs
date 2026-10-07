@@ -19,6 +19,9 @@ pub struct ContainerStats {
     pub cpu_percent: Option<f64>,
     /// Memory in use minus reclaimable page cache, as `docker stats` counts it.
     pub mem_used: u64,
+    /// The most memory the container may use: its own limit, or all of the
+    /// VM's memory when it has none (what `docker stats` divides by).
+    pub mem_limit: u64,
     /// Bytes received / sent since the container started, all networks summed.
     pub net_rx: u64,
     pub net_tx: u64,
@@ -38,6 +41,11 @@ pub fn from_response(r: &ContainerStatsResponse) -> ContainerStats {
             .zip(r.precpu_stats.as_ref())
             .and_then(|(cur, prev)| cpu_percent(cur, prev)),
         mem_used: r.memory_stats.as_ref().map(mem_used).unwrap_or_default(),
+        mem_limit: r
+            .memory_stats
+            .as_ref()
+            .and_then(|m| m.limit)
+            .unwrap_or_default(),
         net_rx,
         net_tx,
         io_read,
@@ -303,6 +311,7 @@ mod tests {
             ContainerStats {
                 cpu_percent: Some(40.0),
                 mem_used: 200_000_000,
+                mem_limit: 8_000_000_000,
                 net_rx: 1500,
                 net_tx: 250,
                 io_read: 5120,
