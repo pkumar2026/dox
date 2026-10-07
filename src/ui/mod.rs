@@ -8,6 +8,7 @@ pub mod insights_stats;
 pub mod log_rows;
 pub mod logs;
 pub mod panels;
+pub mod stats_columns;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 #[allow(unused_imports)]

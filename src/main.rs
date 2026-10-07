@@ -8,6 +8,7 @@ mod insights;
 mod insights_ui;
 mod logview;
 mod refresh;
+mod stats;
 mod ui;
 
 use std::io;

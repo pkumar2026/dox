@@ -7,6 +7,7 @@ use crate::app::{App, Panel};
 use crate::docker::containers::{self, normalize_state};
 use crate::docker::images::format_size;
 use crate::grouping;
+use crate::ui::stats_columns;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, panel: Panel) {
     let focused = panel == app.panel;
@@ -97,6 +98,9 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
     let groups = app.container_groups();
     let render_rows = grouping::render_rows(&groups, &app.collapsed_groups);
     let selected_view_idx = app.containers_state.selected();
+    // Highlight symbol, STATE and PORTS, each with its column gap.
+    let fixed_width = 1 + (8 + 1) + (16 + 1);
+    let stat_cols = stats_columns::fitting(area.width.saturating_sub(fixed_width));
 
     let mut rows: Vec<Row> = Vec::new();
     let mut rendered_selected: Option<usize> = None;
@@ -138,22 +142,31 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
                 if Some(*view_idx) == selected_view_idx {
                     rendered_selected = Some(rows.len());
                 }
-                rows.push(Row::new(vec![name, state, ports]).style(style));
+                let stats = app.stats.get(&c.id);
+                let stat_cells = stat_cols
+                    .iter()
+                    .map(|col| stats.map(|s| col.cell(s)).unwrap_or_default());
+                let cells: Vec<String> =
+                    [name, state, ports].into_iter().chain(stat_cells).collect();
+                rows.push(Row::new(cells).style(style));
             }
         }
     }
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Min(10),
-            Constraint::Length(8),
-            Constraint::Length(16),
-        ],
-    )
-    .header(Row::new(vec!["NAME", "STATE", "PORTS"]).style(header_style(focused)))
-    .row_highlight_style(highlight_style(focused))
-    .highlight_symbol(if focused { "▌" } else { " " });
+    let widths = [
+        Constraint::Min(10),
+        Constraint::Length(8),
+        Constraint::Length(16),
+    ]
+    .into_iter()
+    .chain(stat_cols.iter().map(|col| Constraint::Length(col.width())));
+    let headers = ["NAME", "STATE", "PORTS"]
+        .into_iter()
+        .chain(stat_cols.iter().map(|col| col.header()));
+    let table = Table::new(rows, widths)
+        .header(Row::new(headers).style(header_style(focused)))
+        .row_highlight_style(highlight_style(focused))
+        .highlight_symbol(if focused { "▌" } else { " " });
 
     let real_selected = app.containers_state.selected();
     app.containers_state.select(rendered_selected);

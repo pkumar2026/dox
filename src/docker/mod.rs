@@ -8,6 +8,7 @@ pub mod containers;
 pub mod events;
 pub mod images;
 pub mod networks;
+pub mod stats;
 pub mod volumes;
 
 const SOCKET_TIMEOUT_SECS: u64 = 120;

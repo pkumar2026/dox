@@ -23,6 +23,7 @@ use crate::docker::containers::{self, ContainerRow};
 use crate::docker::events::{self as docker_events, DockerSignal, Stale};
 use crate::docker::images::{self, ImageRow};
 use crate::docker::networks::{self, NetworkRow};
+use crate::docker::stats::{self as docker_stats, ContainerStats};
 use crate::docker::volumes::{self, VolumeRow};
 use crate::docker::DockerClient;
 use crate::events::{self, Action, Mode};
@@ -31,6 +32,7 @@ use crate::grouping::{build_groups, flatten_selectable, Group};
 use crate::insights_ui::InsightsState;
 use crate::logview::LogView;
 use crate::refresh::{self, RefreshGate};
+use crate::stats::StatsStreams;
 use crate::ui::logs::{LogBuffer, Selection};
 
 mod insights_actions;
@@ -146,6 +148,11 @@ pub enum AppMsg {
     Lists(Box<ListSnapshot>),
     Refresh,
     Docker(DockerSignal),
+    /// A sample from one running container's stats stream.
+    Stats {
+        id: String,
+        stats: ContainerStats,
+    },
 }
 
 /// One round of list data, fetched off the event loop.
@@ -245,6 +252,9 @@ pub struct App {
     /// Gonzo-style insights: side panel, popups, log filter/search/columns.
     pub insights: InsightsState,
 
+    /// Live CPU / memory / network / disk numbers per running container.
+    pub stats: StatsStreams,
+
     /// Filtered row indices per panel, in `Panel::index()` order. Rebuilt only
     /// by `recompute_visible`; see `visible_containers` for why.
     visible: [Vec<usize>; 4],
@@ -317,6 +327,7 @@ impl App {
             last_tab_spans: [(0, 0); 4],
             last_panel_inner: [Rect::default(); 4],
             insights: InsightsState::new(Instant::now()),
+            stats: StatsStreams::default(),
             visible: Default::default(),
             refresh_gate: RefreshGate::default(),
             events_live: false,
@@ -668,6 +679,7 @@ impl App {
                     None => (full, now),
                 });
             }
+            AppMsg::Stats { id, stats } => self.stats.record(id, stats),
         }
     }
 
@@ -716,6 +728,28 @@ impl App {
         });
     }
 
+    /// Keep one stats stream open per running container (see `StatsStreams`).
+    fn sync_stats_streams(&mut self) {
+        let running: HashSet<String> = self
+            .containers
+            .iter()
+            .filter(|c| containers::normalize_state(&c.state, &c.status) == "running")
+            .map(|c| c.id.clone())
+            .collect();
+        let docker = self.client.raw().clone();
+        let tx = self.msg_tx.clone();
+        self.stats.sync(&running, |id| {
+            let tx = tx.clone();
+            let msg_id = id.to_string();
+            docker_stats::watch(docker.clone(), id.to_string(), move |stats| {
+                let _ = tx.send(AppMsg::Stats {
+                    id: msg_id.clone(),
+                    stats,
+                });
+            })
+        });
+    }
+
     /// Blocking refresh used once at startup so the first frame has data.
     pub async fn refresh_all(&mut self) -> Result<()> {
         let (c, i, v, n) = tokio::try_join!(
@@ -736,6 +770,7 @@ impl App {
     fn apply_lists(&mut self, snap: ListSnapshot) {
         if let Some(c) = snap.containers {
             self.containers = c;
+            self.sync_stats_streams();
         }
         if let Some(i) = snap.images {
             self.images = i;
@@ -1739,6 +1774,7 @@ where
     }
 
     docker_watch.abort();
+    app.stats.stop_all();
     if let Some(h) = app.log_task.take() {
         h.abort();
     }

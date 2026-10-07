@@ -36,6 +36,13 @@ not published) — deduped, so a port bound on both IPv4 and IPv6 shows once,
 not twice. Selecting a container's logs shows its full mapping list in the
 pane title, in case it doesn't fit the column.
 
+Running containers show live CPU, MEM, NET I/O, BLOCK I/O and PIDS columns —
+the numbers `docker stats` (and [ctop](https://github.com/bcicen/ctop)) show.
+dox keeps one stats stream open per running container and closes it when the
+container stops. MEM leaves out reclaimable page cache, as `docker stats` does.
+The columns appear only when the Containers panel has room, and drop off from
+the right (PIDS first) as it narrows.
+
 The log pane follows whatever's highlighted, debounced by ~200ms — scan
 quickly down a long list and only the container you actually stop on ever
 opens a stream, not every row you passed through. `Enter` / `l` switch
