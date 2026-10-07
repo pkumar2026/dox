@@ -19,6 +19,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, panel: Panel) {
     }
 }
 
+/// Light gray for group headers and unfocused selections. A fixed 256-color
+/// gray: ANSI dark gray shows as black on light themes.
+const BAR_GRAY: Color = Color::Indexed(252);
+
 fn dimmed(_: &str) -> Style {
     Style::default().fg(Color::DarkGray)
 }
@@ -71,7 +75,7 @@ fn highlight_style(focused: bool) -> Style {
     } else {
         // Subtle highlight on unfocused panels so the user can still see
         // selection state without the colour competing for attention.
-        Style::default().add_modifier(Modifier::REVERSED)
+        Style::default().bg(BAR_GRAY).fg(Color::Black)
     }
 }
 
@@ -86,11 +90,11 @@ fn group_header_style(focused: bool) -> Style {
     // divider between groups instead of just another row.
     if focused {
         Style::default()
-            .bg(Color::DarkGray)
-            .fg(Color::White)
+            .bg(BAR_GRAY)
+            .fg(Color::Black)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().bg(Color::DarkGray).fg(Color::DarkGray)
+        Style::default().bg(BAR_GRAY).fg(Color::DarkGray)
     }
 }
 
@@ -287,6 +291,27 @@ mod tests {
             name_in_group("brand-boostx-1", "brand-boost"),
             "brand-boostx-1"
         );
+    }
+
+    #[test]
+    fn group_headers_are_a_light_gray_bar_not_black() {
+        for focused in [true, false] {
+            let style = group_header_style(focused);
+            assert_eq!(style.bg, Some(BAR_GRAY), "focused={focused}");
+            assert_ne!(style.fg, Some(BAR_GRAY), "label stays readable");
+        }
+        assert_eq!(group_header_style(true).fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn unfocused_selection_is_gray_not_reversed() {
+        let style = highlight_style(false);
+        assert_eq!(style.bg, Some(BAR_GRAY));
+        assert_eq!(style.fg, Some(Color::Black));
+        assert!(!style.add_modifier.contains(Modifier::REVERSED));
+        assert!(highlight_style(true)
+            .add_modifier
+            .contains(Modifier::REVERSED));
     }
 
     #[test]

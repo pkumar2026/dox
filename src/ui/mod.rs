@@ -127,13 +127,14 @@ fn draw_body_1x4(frame: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Percentage(top), Constraint::Percentage(bottom)])
         .split(area);
 
+    // Containers carries the stats columns, so it gets the most room.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(40),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
         ])
         .split(rows[0]);
 
