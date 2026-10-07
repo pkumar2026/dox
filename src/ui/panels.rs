@@ -133,10 +133,9 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) 
                 } else {
                     dimmed(&state)
                 };
-                let name = if c.compose_project.is_some() {
-                    format!("    {}", c.name)
-                } else {
-                    c.name.clone()
+                let name = match &c.compose_project {
+                    Some(project) => format!("    {}", name_in_group(&c.name, project)),
+                    None => c.name.clone(),
                 };
                 let ports = truncate(&containers::format_ports_compact(&c.ports), 16);
                 if Some(*view_idx) == selected_view_idx {
@@ -238,6 +237,15 @@ fn draw_networks(frame: &mut Frame, area: Rect, app: &mut App, focused: bool) {
     frame.render_stateful_widget(table, area, &mut app.networks_state);
 }
 
+/// Inside a compose group the header already names the project, so drop the
+/// `<project>-` prefix compose puts on each container name.
+fn name_in_group<'a>(name: &'a str, project: &str) -> &'a str {
+    name.strip_prefix(project)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(name)
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
@@ -251,6 +259,32 @@ fn truncate(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grouped_names_drop_the_compose_project_prefix() {
+        assert_eq!(
+            name_in_group(
+                "skunkworks-airflow-airflow-scheduler-1",
+                "skunkworks-airflow"
+            ),
+            "airflow-scheduler-1"
+        );
+        assert_eq!(
+            name_in_group("brand-boost-temporal-1", "brand-boost"),
+            "temporal-1"
+        );
+    }
+
+    #[test]
+    fn grouped_names_without_the_prefix_stay_whole() {
+        assert_eq!(name_in_group("my-db", "brandi"), "my-db");
+        assert_eq!(name_in_group("brandi", "brandi"), "brandi");
+        assert_eq!(name_in_group("brandi-", "brandi"), "brandi-");
+        assert_eq!(
+            name_in_group("brand-boostx-1", "brand-boost"),
+            "brand-boostx-1"
+        );
+    }
 
     #[test]
     fn container_colors_by_state() {

@@ -28,7 +28,8 @@ you on copy once mouse capture is on.
 Containers group by compose project automatically (`com.docker.compose.project`,
 the label `docker compose` already sets — no extra API calls). Press `z` to
 fold a stack you're not touching right now; a flat list gets hard to scan once
-a handful of stacks are running side by side.
+a handful of stacks are running side by side. Inside a group, names drop the
+`<project>-` prefix compose adds, since the header already shows it.
 
 The PORTS column shows what's actually published (`docker ps` notation:
 `hostport->containerport/proto`, or bare `port/proto` when it's exposed but
